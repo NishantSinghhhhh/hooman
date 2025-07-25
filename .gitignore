@@ -1,0 +1,82 @@
+# ===================================================================
+# General
+# ===================================================================
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Editor directories
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+
+# ===================================================================
+# Backend (Node.js / TypeScript)
+# ===================================================================
+
+# Dependencies
+backend/node_modules/
+
+# Compiled TypeScript files
+backend/dist/
+
+# User-uploaded content
+backend/uploads/
+
+# Environment variables - VERY IMPORTANT
+# Never commit your secret keys
+backend/.env
+
+# Tesseract trained data (can be large and downloaded on demand)
+backend/eng.traineddata
+
+
+# ===================================================================
+# Frontend (Next.js / React / Vite)
+# ===================================================================
+
+# Dependencies
+frontend/node_modules/
+
+# Build output
+frontend/.next/
+frontend/build/
+frontend/dist/
+
+# Environment variables
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Next.js cache
+frontend/.vercel/
+frontend/out/
+
+# Vite cache
+frontend/.vite/
+
+
+# ===================================================================
+# Optional: Test reports
+# ===================================================================
+coverage/
+.nyc_output/
