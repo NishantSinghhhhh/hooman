@@ -26,119 +26,170 @@ export function QuerySubmission({ isDark, userId, session, onQueryAdded, onQuery
     return "document"
   }
 
- // In QuerySubmission.tsx
-
-const submitQuery = async () => {
-  if (!textQuery.trim() && selectedFiles.length === 0) {
-    alert("Please enter a query or upload a file");
-    return;
-  }
-
-  setIsSubmitting(true);
-  try {
-    // 💡 STEP 1: Get the user ID and token directly from the session object.
-    // Use console.log(session) to find the correct path to your userId and token.
-    // It might be session.user.id, session.userId, or session.user.sub.
-    const sessionUserId = (session as any)?.user?.id || (session as any)?.userId;
-    const token = (session as any)?.backendToken;
-
-    // 💡 STEP 2: Validate that you have a user ID and token before sending.
-    if (!sessionUserId || !token) {
-      alert("Authentication error: Unable to get user session. Please log in again.");
-      setIsSubmitting(false);
+  const submitQuery = async () => {
+    if (!textQuery.trim() && selectedFiles.length === 0) {
+      alert("Please enter a query or upload a file");
       return;
     }
-    console.log("--- FRONTEND DEBUG ---");
-    console.log("Sending User ID:", sessionUserId);
-    console.log("Sending Token:", token); // You can decode this at jwt.io to see its contents
-    console.log("----------------------");
 
-    const formData = new FormData();
-    // ✅ STEP 3: Use the verified user ID from the session, NOT the prop.
-    formData.append("userId", sessionUserId);
-    formData.append("textQuery", textQuery);
-    formData.append("queryType", getQueryType(selectedFiles));
+    setIsSubmitting(true);
+    
+    // Generate temporary frontend ID for immediate UI feedback
+    const frontendQueryId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Add to history immediately with processing status
+    const newQuery: QueryHistory = {
+      id: frontendQueryId,
+      type: getQueryType(selectedFiles),
+      query: textQuery || "File analysis",
+      fileName: selectedFiles[0]?.name || '',
+      response: "Processing your request...",
+      timestamp: new Date().toISOString(),
+      status: "processing",
+    };
+    
+    onQueryAdded(newQuery);
 
-    selectedFiles.forEach((file) => {
-      formData.append("files", file);
-    });
+    try {
+      // Get user ID and token from session
+      const sessionUserId = (session as any)?.user?.id || (session as any)?.userId;
+      const token = (session as any)?.backendToken;
 
-    const response = await fetch(
-      `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"}/api/query/submit`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: formData,
+      // Validate authentication
+      if (!sessionUserId || !token) {
+        onQueryUpdated(frontendQueryId, {
+          status: "error",
+          response: "Authentication error: Unable to get user session. Please log in again.",
+        });
+        setIsSubmitting(false);
+        return;
       }
-    );
 
-    if (response.ok) {
+      console.log("--- FRONTEND DEBUG ---");
+      console.log("Sending User ID:", sessionUserId);
+      console.log("Sending Token:", token?.substring(0, 20) + "...");
+      console.log("----------------------");
+
+      const formData = new FormData();
+      formData.append("userId", sessionUserId);
+      formData.append("textQuery", textQuery);
+      formData.append("queryType", getQueryType(selectedFiles));
+
+      selectedFiles.forEach((file) => {
+        formData.append("files", file);
+      });
+
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"}/api/query/submit`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        }
+      );
+
       const result = await response.json();
 
-      const newQuery: QueryHistory = {
-        id: result.queryId || Date.now().toString(),
-        type: getQueryType(selectedFiles),
-        query: textQuery,
-        fileName: selectedFiles[0]?.name || '',
-        response: "Processing...",
-        timestamp: new Date().toISOString(),
-        status: "processing",
-      };
-
-      onQueryAdded(newQuery);
-      setTextQuery("");
-      setSelectedFiles([]);
-      pollForResults(newQuery.id);
-    } else {
-      const errorData = await response.json();
-      // This will now show your specific backend error message.
-      alert(`Error: ${errorData.error || "Failed to submit query"}`);
+      if (response.ok && result.success) {
+        console.log("✅ Query submitted successfully:", result.queryId);
+        
+        // Update the query with the backend ID and start polling
+        onQueryUpdated(frontendQueryId, {
+          response: `Processing... (Estimated time: ${result.estimatedTime || '10-30 seconds'})`
+        });
+        
+        // Start polling for results with backend query ID
+        pollForResults(result.queryId, frontendQueryId);
+        
+        // Clear form
+        setTextQuery("");
+        setSelectedFiles([]);
+      } else {
+        console.error("❌ Query submission failed:", result);
+        onQueryUpdated(frontendQueryId, {
+          status: "error",
+          response: result.error || "Failed to submit query",
+        });
+      }
+    } catch (error) {
+      console.error("❌ Error submitting query:", error);
+      onQueryUpdated(frontendQueryId, {
+        status: "error",
+        response: "Network error occurred while submitting query",
+      });
+    } finally {
+      setIsSubmitting(false);
     }
-  } catch (error) {
-    console.error("Error submitting query:", error);
-    alert("Error submitting query");
-  } finally {
-    setIsSubmitting(false);
-  }
-};
+  };
 
-  const pollForResults = async (queryId: string) => {
-    const maxAttempts = 30
-    let attempts = 0
-
-    const poll = setInterval(async () => {
-      attempts++
+  const pollForResults = async (backendQueryId: string, frontendQueryId: string) => {
+    const maxAttempts = 60; // 5 minutes with 5-second intervals
+    let attempts = 0;
+    
+    console.log(`🔄 Starting to poll for query results: ${backendQueryId}`);
+    
+    const poll = async () => {
       try {
-        const token = (session as any)?.backendToken
+        const token = (session as any)?.backendToken;
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"}/api/query/${queryId}`,
+          `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"}/api/query/queries/${backendQueryId}/status`,
           {
             headers: {
               Authorization: `Bearer ${token}`,
               "Content-Type": "application/json",
             },
-          },
-        )
-
-        if (response.ok) {
-          const data = await response.json()
-          if (data.status === "completed" || data.status === "error") {
-            onQueryUpdated(queryId, { response: data.response, status: data.status })
-            clearInterval(poll)
           }
+        );
+        
+        const data = await response.json();
+        console.log(`📊 Poll attempt ${attempts + 1}: Status = ${data.status}`);
+        
+        if (data.status === 'completed') {
+          console.log("✅ Query completed successfully");
+          onQueryUpdated(frontendQueryId, {
+            status: 'completed',
+            response: data.result?.response || "Query completed successfully",
+          });
+          return; // Stop polling
+        } else if (data.status === 'failed' || data.status === 'error') {
+          console.log("❌ Query failed");
+          onQueryUpdated(frontendQueryId, {
+            status: 'error',
+            response: data.result?.response || data.error || 'Processing failed',
+          });
+          return; // Stop polling
+        }
+        
+        // Still processing, continue polling
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000); // Poll every 5 seconds
+        } else {
+          console.log("⏰ Polling timed out");
+          onQueryUpdated(frontendQueryId, {
+            status: 'error',
+            response: 'Processing timed out - please try again',
+          });
         }
       } catch (error) {
-        console.error("Error polling for results:", error)
+        console.error(`❌ Polling error (attempt ${attempts + 1}):`, error);
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000); // Retry after 5 seconds
+        } else {
+          onQueryUpdated(frontendQueryId, {
+            status: 'error',
+            response: 'Failed to check query status - please refresh the page',
+          });
+        }
       }
-
-      if (attempts >= maxAttempts) {
-        clearInterval(poll)
-        onQueryUpdated(queryId, { response: "Request timed out", status: "error" })
-      }
-    }, 10000)
-  }
+    };
+    
+    // Start polling after a short delay to allow backend processing to begin
+    setTimeout(poll, 2000);
+  };
 
   return (
     <div
@@ -206,7 +257,7 @@ const submitQuery = async () => {
                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                   ></path>
                 </svg>
-                Processing...
+                Submitting...
               </>
             ) : (
               <>

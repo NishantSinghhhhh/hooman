@@ -1,9 +1,6 @@
-// backend/agents/AudioAgent.ts
-import OpenAI from 'openai';
-import axios from 'axios';
-import ffmpeg from 'fluent-ffmpeg';
-import { promises as fs, createReadStream } from 'fs';
-import path from 'path';
+// backend/agents/AudioAgent.ts (Fixed version)
+import { MCPServerAdapter } from '../services/MCPServerAdapter';
+import { QueryIngestionService } from '../services/queryIngestionService';
 import {
   QueryData,
   AgentResponse,
@@ -13,56 +10,112 @@ import {
   AudioAnalysis,
   UploadedFile,
 } from '../types/agent';
+import { createReadStream } from 'fs';
 
 export class AudioAgent {
-  private openaiClient?: OpenAI;
-  private ollamaConfig?: {
-    baseUrl: string;
-    model: string;
-  };
+  private mcpAdapter: MCPServerAdapter;
+  private agentName: string = 'AudioSpecialist';
+  private fallbackProcessing: boolean = false;
 
   constructor(config: AgentConfig = {}) {
-    if (config.useOllama) {
-      this.ollamaConfig = {
-        baseUrl: config.ollamaBaseUrl || 'http://localhost:11434',
-        model: config.ollamaModel || 'llama2',
-      };
-    } else {
-      const apiKey = config.openaiApiKey || process.env.OPENAI_API_KEY;
-      if (apiKey) {
-        this.openaiClient = new OpenAI({ apiKey });
-      }
+    // Initialize MCP Server connection
+    this.mcpAdapter = new MCPServerAdapter({
+      url: config.mcpServerUrl || process.env.AUDIO_MCP_SERVER_URL || 'http://localhost:8001',
+      transport: 'sse',
+      name: 'audio-mcp-server',
+      description: 'Pixeltable-based audio processing server'
+    }, 'audio');
+
+    // Enable fallback to local processing if MCP server is unavailable
+    this.fallbackProcessing = config.fallbackProcessing || false;
+  }
+
+  async initialize(): Promise<void> {
+    try {
+      await this.mcpAdapter.connectToServer();
+      console.log('✅ AudioAgent: MCP server connected');
+    } catch (error) {
+      console.warn('⚠️ AudioAgent: MCP server unavailable, fallback mode enabled');
+      this.fallbackProcessing = true;
     }
   }
 
   async processQuery(queryData: QueryData): Promise<AgentResponse> {
+    const startTime = Date.now();
+    
     try {
       const { textQuery, files = [], userId } = queryData;
-
-      console.log('🔊 Audio Agent processing query...');
+   
+      console.log('🔊 MCP-Enabled Audio Agent processing query...');
       console.log(`📝 Query: ${textQuery}`);
       console.log(`🔊 Audio files: ${files.length}`);
-
+   
       let response = '';
       const processedFiles: ProcessedFile[] = [];
-
+   
       if (files.length === 0) {
         response = await this.handleNoAudioQuery(textQuery || '', userId);
       } else {
         for (const file of files) {
           try {
-            const audioAnalysis = await this.analyzeAudio(file);
-            const llmResponse = await this.getLLMAnalysis(audioAnalysis, textQuery || '', file);
+            let audioAnalysis: AudioAnalysis;
+            let storageId: string | undefined = undefined;
+            
+            // Try MCP processing first
+            if (!this.fallbackProcessing) {
+              try {
+                console.log(`🚀 Processing ${file.filename} via MCP server...`);
+                
+                // Create a readable stream for the file
+                const fileStream = createReadStream(file.path);
+                
+                // Process via MCP server
+                const mcpResult = await this.mcpAdapter.processAudio(fileStream, [
+                  'transcribe',
+                  'extract_metadata',
+                  'generate_embeddings',
+                  'analyze_content',
+                  'detect_language'
+                ]);
 
-            processedFiles.push({
+                audioAnalysis = mcpResult.analysis;
+                
+                // Store in Pixeltable with embeddings
+                if (mcpResult.embeddings && mcpResult.embeddings.length > 0) {
+                  storageId = await this.mcpAdapter.storeAnalysis(audioAnalysis, mcpResult.embeddings);
+                  console.log(`💾 Audio analysis stored with ID: ${storageId}`);
+                }
+                
+                console.log('✅ MCP processing completed successfully');
+                
+              } catch (mcpError) {
+                console.warn(`⚠️ MCP processing failed for ${file.filename}, falling back to local processing:`, mcpError);
+                audioAnalysis = await this.fallbackAudioAnalysis(file);
+              }
+            } else {
+              // Fallback to local processing
+              audioAnalysis = await this.fallbackAudioAnalysis(file);
+            }
+
+            // Format response for user
+            const formattedResponse = this.formatAudioResponse(audioAnalysis, textQuery || '', file);
+   
+            const processedFile: ProcessedFile = {
               fileName: file.filename,
               fileType: file.mimetype,
               status: 'processed',
               analysis: audioAnalysis,
-              response: llmResponse,
-            });
+              response: formattedResponse
+            };
 
-            response += `\n\n**Analysis of ${file.filename}:**\n${llmResponse}`;
+            // Add storageId if available
+            if (storageId) {
+              processedFile.storageId = storageId;
+            }
+
+            processedFiles.push(processedFile);
+   
+            response += `\n\n**Analysis of ${file.filename}:**\n${formattedResponse}`;
           } catch (fileError) {
             console.error(`Error processing audio ${file.filename}:`, fileError);
             processedFiles.push({
@@ -74,222 +127,222 @@ export class AudioAgent {
           }
         }
       }
-
-      return {
+   
+      const agentResponse: AgentResponse = {
         success: true,
         response: response.trim(),
         agentType: 'audio',
         processedFiles,
         capabilities: this.getCapabilities(),
         metadata: {
-          processingTime: Date.now(),
+          processingTime: Date.now() - startTime,
           audioCount: files.length,
           userId,
+          mcpProcessed: !this.fallbackProcessing,
+          agentName: this.agentName,
+          processingMode: this.fallbackProcessing ? 'fallback' : 'mcp'
         },
       };
+   
+      // Store the query results
+      try {
+        await QueryIngestionService.storeQuery(
+          userId,
+          queryData,
+          agentResponse,
+          Date.now() - startTime
+        );
+      } catch (ingestionError) {
+        console.error('⚠️ Query ingestion failed:', ingestionError);
+      }
+   
+      return agentResponse;
     } catch (error) {
-      console.error('❌ Audio Agent error:', error);
-      return {
+      console.error('❌ MCP Audio Agent error:', error);
+      
+      const errorResponse: AgentResponse = {
         success: false,
         error: error instanceof Error ? error.message : String(error),
-        response:
-          "I encountered an error while analyzing your audio. Please try again or contact support if the issue persists.",
+        response: "I encountered an error while processing your audio. Please try again or contact support if the issue persists.",
         agentType: 'audio',
+        metadata: { 
+          agentName: this.agentName,
+          processingMode: this.fallbackProcessing ? 'fallback' : 'mcp'
+        }
       };
+   
+      try {
+        await QueryIngestionService.storeQuery(
+          queryData.userId,
+          queryData,
+          errorResponse,
+          Date.now() - startTime
+        );
+      } catch (ingestionError) {
+        console.error('⚠️ Failed query ingestion also failed:', ingestionError);
+      }
+   
+      return errorResponse;
     }
   }
 
-  private async analyzeAudio(file: UploadedFile): Promise<AudioAnalysis> {
-    const filePath = file.path;
+  private async fallbackAudioAnalysis(file: UploadedFile): Promise<AudioAnalysis> {
+    console.log(`🔄 Performing fallback analysis for ${file.filename}...`);
+    
+    // Basic fallback analysis without external processing
     const analysis: AudioAnalysis = {
       fileName: file.filename,
       fileType: file.mimetype,
+      duration: 0, // Would need local analysis
+      sampleRate: 0,
+      channels: 0,
+      transcription: 'Transcription unavailable (MCP server offline)',
+      language: 'unknown',
+      confidence: 0,
+      processingMode: 'fallback'
     };
 
-    try {
-      console.log('🔊 Analyzing audio metadata...');
+    // Add contentType if it doesn't exist in the base interface
+    (analysis as any).contentType = 'unknown';
 
-      const metadata = await this.getAudioMetadata(filePath);
-      analysis.duration = metadata.duration ?? 0;
-      analysis.sampleRate = metadata.sampleRate ?? 0;
-      analysis.channels = metadata.channels ?? 0;
+    return analysis;
+  }
 
-      if (this.openaiClient) {
-        console.log('🎤 Attempting audio transcription...');
-        analysis.transcription = await this.transcribeWithWhisper(filePath);
-        analysis.language = 'auto-detected';
-        analysis.confidence = 0.9;
+  private formatAudioResponse(analysis: AudioAnalysis, userQuery: string, file: UploadedFile): string {
+    let response = `**🎵 Audio Analysis Results**\n\n`;
+    
+    // Processing mode indicator
+    if (analysis.processingMode === 'fallback') {
+      response += `⚠️ **Note:** Processed in fallback mode (limited functionality)\n\n`;
+    } else {
+      response += `🚀 **Processed via MCP Server** - Enhanced analysis available\n\n`;
+    }
+    
+    // Technical Details
+    response += `**📊 Technical Details:**\n`;
+    response += `• Duration: ${analysis.duration ? `${Math.round(analysis.duration)} seconds` : 'Unknown'}\n`;
+    response += `• Sample Rate: ${analysis.sampleRate ? `${analysis.sampleRate}Hz` : 'Unknown'}\n`;
+    response += `• Channels: ${analysis.channels || 'Unknown'}\n`;
+    response += `• File Size: ${Math.round(file.size / (1024 * 1024))}MB\n`;
+    response += `• Format: ${file.mimetype}\n\n`;
+
+    // Transcription (if available)
+    if (analysis.transcription && analysis.transcription.length > 0 && 
+        !analysis.transcription.includes('unavailable')) {
+      response += `**📝 Transcription:**\n`;
+      response += `${analysis.transcription}\n\n`;
+    }
+
+    // Content Analysis (MCP-enhanced features)
+    if (analysis.language && analysis.language !== 'unknown') {
+      response += `**🧠 Content Analysis:**\n`;
+      response += `• Language: ${analysis.language}\n`;
+      if (analysis.confidence && analysis.confidence > 0) {
+        response += `• Confidence: ${Math.round(analysis.confidence * 100)}%\n`;
+      }
+      if ((analysis as any).contentType) {
+        response += `• Content Type: ${(analysis as any).contentType}\n`;
+      }
+      if (analysis.sentiment) {
+        response += `• Sentiment: ${analysis.sentiment}\n`;
+      }
+      if (analysis.speakers) {
+        response += `• Speakers Detected: ${analysis.speakers}\n`;
+      }
+      response += `\n`;
+    }
+
+    // AI Insights (from MCP processing)
+    if (analysis.insights && analysis.insights.length > 0) {
+      response += `**💡 AI Insights:**\n`;
+      response += `${analysis.insights}\n\n`;
+    }
+
+    // Keywords/Topics (from MCP processing)
+    if (analysis.keywords && analysis.keywords.length > 0) {
+      response += `**🏷️ Key Topics:**\n`;
+      response += `${analysis.keywords.join(', ')}\n\n`;
+    }
+
+    // Answer user's specific question
+    if (userQuery && userQuery !== 'Describe this audio file and its characteristics') {
+      response += `**❓ Answer to "${userQuery}":**\n`;
+      const queryResponse = (analysis as any).queryResponse;
+      if (queryResponse) {
+        response += `${queryResponse}\n`;
       } else {
-        analysis.transcription = 'Audio transcription not available (OpenAI API key required)';
-        analysis.language = 'unknown';
-        analysis.confidence = 0;
+        response += `Based on the audio analysis above, please refer to the transcription and technical details for relevant information.\n`;
       }
-
-      console.log('✅ Audio analysis completed');
-      return analysis;
-    } catch (error) {
-      console.error('Audio analysis error:', error);
-      throw new Error(`Failed to analyze audio: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
 
-  private async getAudioMetadata(filePath: string): Promise<{
-    duration?: number;
-    sampleRate?: number;
-    channels?: number;
-  }> {
-    return new Promise((resolve, reject) => {
-      ffmpeg.ffprobe(filePath, (err, metadata) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        const audioStream = metadata.streams.find((s) => s.codec_type === 'audio');
-        const duration = metadata.format.duration ? Number(metadata.format.duration) : undefined;
-        const sampleRate = audioStream?.sample_rate ? Number(audioStream.sample_rate) : undefined;
-        const channels = audioStream?.channels ? Number(audioStream.channels) : undefined;
-
-        // Provide defaults here to avoid TS errors with exactOptionalPropertyTypes
-        resolve({
-          duration: duration ?? 0,
-          sampleRate: sampleRate ?? 0,
-          channels: channels ?? 0,
-        });
+    // Similarity search (if MCP processed)
+    if (analysis.similarContent && analysis.similarContent.length > 0) {
+      response += `\n**🔍 Similar Content Found:**\n`;
+      analysis.similarContent.forEach((item: any, index: number) => {
+        response += `${index + 1}. ${item.filename} (${Math.round(item.similarity * 100)}% similar)\n`;
       });
-    });
-  }
-
-  private async transcribeWithWhisper(audioPath: string): Promise<string> {
-    if (!this.openaiClient) return 'OpenAI client not available';
-
-    try {
-      // Convert audio to MP3 for Whisper compatibility
-      const mp3Path = path.join(
-        path.dirname(audioPath),
-        `whisper_${path.basename(audioPath, path.extname(audioPath))}.mp3`
-      );
-
-      await new Promise<void>((resolve, reject) => {
-        ffmpeg(audioPath)
-          .audioCodec('libmp3lame') // Correct MP3 codec
-          .audioBitrate(128)
-          .format('mp3')
-          .output(mp3Path)
-          .on('end', () => resolve())        // Wrap resolve in arrow function to fix type error
-          .on('error', (err) => reject(err)) // Wrap reject similarly
-          .run();
-      });
-
-      // Use a readable stream to satisfy OpenAI's 'Uploadable' type
-      const stream = createReadStream(mp3Path);
-
-      const transcriptionResponse = await this.openaiClient.audio.transcriptions.create({
-        file: stream,    // Stream instead of Buffer to satisfy types
-        model: 'whisper-1',
-        // language: 'en',  // optional, Whisper can auto-detect language
-      });
-
-      // Clean up temporary MP3 file
-      try {
-        await fs.unlink(mp3Path);
-      } catch {
-        // Ignore cleanup errors
-      }
-
-      return transcriptionResponse.text ?? 'No transcription available';
-    } catch (error) {
-      console.warn('Whisper transcription failed:', error);
-      return 'Audio transcription failed. Please check your OpenAI API key and try again.';
     }
-  }
 
-  private async getLLMAnalysis(audioAnalysis: AudioAnalysis, userQuery: string, file: UploadedFile): Promise<string> {
-    try {
-      const analysisData = {
-        duration: audioAnalysis.duration,
-        sampleRate: audioAnalysis.sampleRate,
-        channels: audioAnalysis.channels,
-        transcription: audioAnalysis.transcription,
-        language: audioAnalysis.language,
-        confidence: audioAnalysis.confidence,
-      };
-
-      const prompt = `You are an expert audio analyst. Based on the audio analysis data provided, answer the user's question comprehensively.
-
-User Question: ${userQuery || 'Describe this audio file and its characteristics'}
-
-Audio Analysis Data:
-${JSON.stringify(analysisData, null, 2)}
-
-Audio Metadata:
-- File Name: ${file.filename}
-- Duration: ${audioAnalysis.duration ? `${Math.round(audioAnalysis.duration)}s` : 'Unknown'}
-- Sample Rate: ${audioAnalysis.sampleRate ? `${audioAnalysis.sampleRate}Hz` : 'Unknown'}
-- Channels: ${audioAnalysis.channels ? audioAnalysis.channels.toString() : 'Unknown'}
-- File Size: ${Math.round(file.size / (1024 * 1024))}MB
-- Format: ${file.mimetype}
-
-Instructions:
-1. Analyze the provided audio data carefully
-2. Answer the user's question based on audio metadata and transcribed content
-3. Describe audio characteristics like duration, quality, and format
-4. If transcription is available, provide insights about the spoken content
-5. Offer helpful analysis of the audio content
-
-Response:`;
-
-      let responseText: string;
-
-      if (this.openaiClient) {
-        const completion = await this.openaiClient.chat.completions.create({
-          model: 'gpt-3.5-turbo',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.2,
-          max_tokens: 500,
-        });
-        responseText = completion.choices[0]?.message?.content || '';
-      } else if (this.ollamaConfig) {
-        const response = await axios.post(`${this.ollamaConfig.baseUrl}/api/generate`, {
-          model: this.ollamaConfig.model,
-          prompt,
-          stream: false,
-        });
-        responseText = response.data.response || '';
-      } else {
-        responseText = `Audio file analysis:
-- File: ${file.filename}
-- Duration: ${audioAnalysis.duration ? `${Math.round(audioAnalysis.duration)} seconds` : 'Unknown'}
-- Sample Rate: ${audioAnalysis.sampleRate ? `${audioAnalysis.sampleRate}Hz` : 'Unknown'}
-- Channels: ${audioAnalysis.channels ?? 'Unknown'}
-- Size: ${Math.round(file.size / (1024 * 1024))}MB
-- Format: ${file.mimetype}
-
-${audioAnalysis.transcription ? `Transcription: ${audioAnalysis.transcription}` : 'No transcription available'}`;
-      }
-
-      return responseText;
-    } catch (error) {
-      console.error('LLM analysis error:', error);
-      return `Error in detailed analysis. Basic info: Audio file ${file.filename}, size: ${Math.round(
-        file.size / (1024 * 1024)
-      )}MB${audioAnalysis.duration ? `, duration: ${Math.round(audioAnalysis.duration)}s` : ''}`;
-    }
+    return response;
   }
 
   private async handleNoAudioQuery(textQuery: string, userId: string): Promise<string> {
-    return `I understand you're asking about: "${textQuery}"
+    return `I understand you're asking about: **"${textQuery}"**
 
-Since no audio files were uploaded, I can help you with:
-1. Upload audio files (MP3, WAV, M4A, etc.) for me to analyze
-2. Transcribe speech from audio recordings using OpenAI Whisper
-3. Analyze audio quality and technical properties
-4. Extract metadata from audio files
-5. Identify language and content in audio
+Since no audio files were uploaded, I can help you with our advanced MCP-powered audio analysis:
 
-Please upload some audio files and I'll be happy to analyze them for you!`;
+🎵 **MCP-Enhanced Audio Processing:**
+• **Enterprise-Grade Transcription** - High-accuracy speech recognition via Pixeltable
+• **Multi-Language Support** - Automatic detection and transcription of 100+ languages
+• **Advanced Content Analysis** - Sentiment, mood, speaker identification, and thematic analysis
+• **Vector Embeddings** - Audio content stored as embeddings for similarity search
+• **Speaker Diarization** - Distinguish and identify multiple speakers in conversations
+• **Audio Enhancement Suggestions** - Quality assessment and improvement recommendations
+• **Intelligent Search** - Find similar audio content from your previous uploads
+
+🔍 **Advanced Capabilities:**
+• Voice pattern analysis and recognition
+• Music genre and mood classification
+• Podcast and lecture content extraction
+• Call center and interview analysis
+• Audio book and narration processing
+• Sound effect and ambient audio classification
+
+📁 **Supported Formats:** MP3, WAV, M4A, AAC, OGG, FLAC (up to 25MB)
+
+💾 **Smart Storage & Search:** 
+All processed audio is stored with vector embeddings in Pixeltable, enabling:
+- Similarity search across your audio library
+- Content-based recommendations
+- Duplicate detection
+- Cross-reference with other media types
+
+${this.fallbackProcessing ? 
+  '⚠️ **Note:** Currently running in fallback mode. Full MCP features may be limited.' : 
+  '🚀 **MCP Server Active:** Full enhanced processing available!'}
+
+Please upload your audio files to experience our advanced analysis capabilities!`;
   }
 
   getCapabilities(): AgentCapabilities {
+    const baseCapabilities = [
+      'Audio content transcription and analysis',
+      'Metadata extraction and technical assessment',
+      'Basic audio format support'
+    ];
+
+    const mcpCapabilities = [
+      'MCP-powered high-accuracy transcription (100+ languages)',
+      'Advanced audio embeddings for similarity search',
+      'Speaker identification and diarization',
+      'Content sentiment and mood analysis',
+      'Audio quality enhancement suggestions',
+      'Vector storage in Pixeltable database',
+      'Cross-media content correlation',
+      'Real-time similarity search',
+      'Advanced audio feature extraction'
+    ];
+
     return {
       agentType: 'audio',
       supportedFormats: [
@@ -301,23 +354,36 @@ Please upload some audio files and I'll be happy to analyze them for you!`;
         'audio/ogg',
         'audio/flac',
       ],
-      capabilities: [
-        'Audio transcription (OpenAI Whisper)',
-        'Metadata extraction',
-        'Quality analysis',
-        'Language detection',
-        'Format conversion',
-        'Duration and technical analysis',
-      ],
-      maxFileSize: '25MB (Whisper limit)',
-      processingTime: 'Medium (15-60 seconds)',
-      accuracy: 'Very High (OpenAI Whisper)',
-      languages: ['English', 'Spanish', 'French', 'German', '90+ languages supported'],
+      capabilities: this.fallbackProcessing ? baseCapabilities : mcpCapabilities,
+      maxFileSize: '25MB per file',
+      processingTime: this.fallbackProcessing ? 
+        'Medium (30-60 seconds - fallback mode)' : 
+        'Fast (5-30 seconds via MCP server)',
+      accuracy: this.fallbackProcessing ? 
+        'Medium (fallback mode)' : 
+        'Very High (Enterprise MCP-powered)',
+      languages: this.fallbackProcessing ? 
+        ['English (primary)'] : 
+        ['100+ languages via MCP server']
     };
   }
 
   async connectToMCP(): Promise<void> {
-    console.log('📡 Connecting to Audio MCP Server...');
-    // Implementation for Pixeltable audio MCP server
+    await this.initialize();
+  }
+
+  // Method to search similar audio content
+  async searchSimilarAudio(queryEmbeddings: number[], limit: number = 5): Promise<any[]> {
+    if (this.fallbackProcessing) {
+      console.warn('⚠️ Similarity search unavailable in fallback mode');
+      return [];
+    }
+
+    try {
+      return await this.mcpAdapter.searchSimilar(queryEmbeddings, limit);
+    } catch (error) {
+      console.error('❌ Failed to search similar audio:', error);
+      return [];
+    }
   }
 }

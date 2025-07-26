@@ -1,19 +1,25 @@
-// backend/routes/queryRoutes.ts
 import { Router } from 'express';
 import QueryController from '../controllers/queryController';
-import { authenticateToken } from '../middleware/auth';  // Your JWT auth middleware
+import { authenticateToken } from '../middleware/auth';
 
 const router = Router();
 const queryController = new QueryController();
 
-router.use(authenticateToken); // Protect all routes; ensure req.user is set
-
-// Upload middleware needed for submit route
 router.post(
-    '/submit',
-    authenticateToken, // 1. First, authenticate the user
-    queryController.uploadMiddleware, // 2. THEN, use multer to parse form data and files
-    queryController.submitQuery // 3. Finally, run your main controller logic
-  );
+  '/submit',
+  authenticateToken,
+  queryController.uploadMiddleware,
+  queryController.submitQuery
+);
+
+// Poll for result
+router.get('/:queryId', authenticateToken, queryController.getQueryResult);
+// History
+// In your routes file (e.g., routes/queryRoutes.ts)
+router.get('/queries/:queryId/status', authenticateToken, queryController.getQueryStatus);
+router.get('/history/:userId', authenticateToken, queryController.getQueryHistory);
+// System info
+router.get('/system/capabilities', queryController.getCapabilities);
+router.get('/system/health', queryController.healthCheck);
 
 export default router;

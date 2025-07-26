@@ -36,30 +36,30 @@ export class RouterAgent {
         })();
 
     this.classificationPrompt = PromptTemplate.fromTemplate(`
-You are a query classification system. Analyze the user's query and uploaded files to determine which specialized agent should handle it.
+    You are a query classification system. Analyze the user's query and uploaded files to determine which specialized agent should handle it.
 
-User Query: {textQuery}
-Number of Files: {fileCount}
-File Types: {fileTypes}
-File Names: {fileNames}
+    User Query: {textQuery}
+    Number of Files: {fileCount}
+    File Types: {fileTypes}
+    File Names: {fileNames}
 
-Analyze this input and classify it into one of these categories:
-1. DOCUMENT - Text files, PDFs, Word docs, or text-heavy queries
-2. IMAGE - Image files, visual analysis, OCR requests
-3. VIDEO - Video files, video analysis, transcription requests
-4. AUDIO - Audio files, speech transcription, audio analysis
-5. TEXT - Pure text queries with no files
+    Analyze this input and classify it into one of these categories:
+    1. DOCUMENT - Text files, PDFs, Word docs, or text-heavy queries
+    2. IMAGE - Image files, visual analysis, OCR requests
+    3. VIDEO - Video files, video analysis, transcription requests
+    4. AUDIO - Audio files, speech transcription, audio analysis
+    5. TEXT - Pure text queries with no files
 
-Return your response as a JSON object with this exact format:
-{{
-    "classification": "DOCUMENT|IMAGE|VIDEO|AUDIO|TEXT",
-    "agentType": "document|image|video|audio",
-    "reasoning": "Brief explanation of your classification decision",
-    "priority": "high|medium|low",
-    "confidence": 0.95
-}}
+    Return your response as a JSON object with this exact format:
+    {{
+        "classification": "DOCUMENT|IMAGE|VIDEO|AUDIO|TEXT",
+        "agentType": "document|image|video|audio",
+        "reasoning": "Brief explanation of your classification decision",
+        "priority": "high|medium|low",
+        "confidence": 0.95
+    }}
 
-Focus on the primary file type if multiple types are present. Consider the user's intent from their text query.
+    Focus on the primary file type if multiple types are present. Consider the user's intent from their text query.
 `);
 
     this.chain = new LLMChain({

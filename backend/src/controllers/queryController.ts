@@ -153,78 +153,236 @@ public submitQuery = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-  private async processQueryAsync(queryId: string, queryData: QueryData): Promise<void> {
-    try {
-      console.log(`🔄 Processing query ${queryId}...`);
+private async processQueryAsync(queryId: string, queryData: QueryData): Promise<void> {
+  try {
+    console.log(`🔄 Processing query ${queryId}...`);
 
-      // This internally will:
-      // 1) Classify (document, image, video, audio)
-      // 2) Route query to the appropriate agent
-      // 3) Execute agent processing
-      const result = await this.orchestrator.processQuery(queryData);
+    // This internally will:
+    // 1) Classify (document, image, video, audio)
+    // 2) Route query to the appropriate agent
+    // 3) Execute agent processing
+    const result = await this.orchestrator.processQuery(queryData);
 
-      queryResults.set(queryId, {
-        ...result,
-        metadata: {
-          ...result.metadata,
-          queryId,
-          userId: queryData.userId,
-        }
-      });
-      queryStatus.set(queryId, result.success ? 'completed' : 'error');
+    // Log the full result object
+    console.log(`📊 Query ${queryId} processing result:`, result);
 
-      console.log(`✅ Query ${queryId} completed successfully`);
+    queryResults.set(queryId, {
+      ...result,
+      metadata: {
+        ...result.metadata,
+        queryId,
+        userId: queryData.userId,
+      }
+    });
+    queryStatus.set(queryId, result.success ? 'completed' : 'error');
 
-      this.cleanupFiles(queryData);
-    } catch (error) {
-      console.error(`❌ Query ${queryId} processing failed:`, error);
+    console.log(`✅ Query ${queryId} completed successfully`);
 
-      queryStatus.set(queryId, 'error');
-      queryResults.set(queryId, {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        response: 'Processing failed due to an internal error',
-        agentType: 'error',
+    this.cleanupFiles(queryData);
+  } catch (error) {
+    console.error(`❌ Query ${queryId} processing failed:`, error);
+
+    queryStatus.set(queryId, 'error');
+    queryResults.set(queryId, {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      response: 'Processing failed due to an internal error',
+      agentType: 'error',
+      classification: {
+        classification: 'TEXT',
+        agentType: 'document',
+        reasoning: 'Error during processing',
+        priority: 'low',
+        confidence: 0.0,
+      },
+      routing: {
+        targetAgent: 'ErrorHandler',
         classification: {
           classification: 'TEXT',
           agentType: 'document',
-          reasoning: 'Error during processing',
+          reasoning: 'Error fallback',
           priority: 'low',
           confidence: 0.0,
         },
-        routing: {
-          targetAgent: 'ErrorHandler',
-          classification: {
-            classification: 'TEXT',
-            agentType: 'document',
-            reasoning: 'Error fallback',
-            priority: 'low',
-            confidence: 0.0,
-          },
-          routingDecision: {
-            agent: 'ErrorHandler',
-            priority: 'low',
-            confidence: 0.0,
-            reasoning: 'Error occurred',
-          },
-        },
-        processingTime: 0,
-        timestamp: new Date().toISOString(),
-        orchestrator: {
-          version: '1.0.0',
-          agentUsed: 'ErrorHandler',
+        routingDecision: {
+          agent: 'ErrorHandler',
+          priority: 'low',
           confidence: 0.0,
+          reasoning: 'Error occurred',
         },
-        metadata: {
-          queryId,
-          userId: queryData.userId,
-          error: true,
-        },
-      });
+      },
+      processingTime: 0,
+      timestamp: new Date().toISOString(),
+      orchestrator: {
+        version: '1.0.0',
+        agentUsed: 'ErrorHandler',
+        confidence: 0.0,
+      },
+      metadata: {
+        queryId,
+        userId: queryData.userId,
+        error: true,
+      },
+    });
 
-      this.cleanupFiles(queryData);
-    }
+    this.cleanupFiles(queryData);
   }
+}
+
+public getQueryResult = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { queryId } = req.params;
+    // (Assume req.user is set by auth middleware)
+    const userId = (req as any).user?.userId || (req as any).user?._id ;
+    if (!userId) {
+      res.status(401).json({ success: false, error: 'Authentication required' });
+      return;
+    }
+
+    const status = queryStatus.get(queryId);
+    const result = queryResults.get(queryId);
+
+    if (!status) {
+      res.status(404).json({ success: false, error: 'Query not found' });
+      return;
+    }
+    if (result?.metadata?.userId !== userId) {
+      res.status(403).json({ success: false, error: 'Unauthorized' });
+      return;
+    }
+    if (status === 'processing') {
+      res.status(202).json({ success: true, status: 'processing' });
+      return;
+    }
+    if (status === 'completed') {
+      res.status(200).json({ success: true, status: 'completed', result });
+      return;
+    }
+    // status === 'error'
+    res.status(500).json({ success: false, status: 'error', error: result?.error || 'Processing failed' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to retrieve query result' });
+  }
+};
+
+public getQueryStatus = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { queryId } = req.params;
+    const userId = (req as any).user?.userId || (req as any).user?._id?.toString();
+    
+    if (!userId) {
+      res.status(401).json({ success: false, error: 'Authentication required' });
+      return;
+    }
+
+    const status = queryStatus.get(queryId);
+    const result = queryResults.get(queryId);
+
+    if (!status) {
+      res.status(404).json({ success: false, error: 'Query not found' });
+      return;
+    }
+
+    // Check if user owns this query
+    if (result?.metadata?.userId !== userId) {
+      res.status(403).json({ success: false, error: 'Unauthorized' });
+      return;
+    }
+
+    if (status === 'processing') {
+      res.status(200).json({ 
+        success: true, 
+        status: 'processing',
+        message: 'Query is still being processed'
+      });
+      return;
+    }
+
+    if (status === 'completed' && result) {
+      res.status(200).json({
+        success: true,
+        status: 'completed',
+        result: {
+          response: result.response,
+          agentType: result.agentType,
+          processingTime: result.processingTime ?? 0,  // Fallback to 0 if undefined
+          timestamp: result.timestamp
+        }
+      });
+      return;
+    }
+    
+    if (status === 'error') {
+      res.status(200).json({ 
+        success: true, 
+        status: 'failed', 
+        error: result?.error || 'Processing failed',
+        result: {
+          response: result?.response || 'An error occurred during processing',
+          agentType: result?.agentType || 'unknown',
+          error: result?.error
+        }
+      });
+      return;
+    }
+
+  } catch (error) {
+    console.error('Error getting query status:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get query status' 
+    });
+  }
+};
+
+public getQueryHistory = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = (req as any).user?.userId || (req as any).user._id;
+    if (userId !== currentUserId) {
+      res.status(403).json({ success: false, error: 'Unauthorized: User ID mismatch' });
+      return;
+    }
+    // Get up to last 50 queries
+    const userQueries = Array.from(queryResults.values())
+      .filter(q => q.metadata?.userId === userId)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 50);
+
+    res.status(200).json({
+      success: true,
+      queries: userQueries.map(q => ({
+        queryId: q.metadata?.queryId,
+        timestamp: q.timestamp,
+        agentType: q.agentType,
+        status: q.success ? 'completed' : 'error',
+        preview: q.response?.substring(0, 200) + '...',
+        processingTime: q.processingTime,
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to retrieve query history' });
+  }
+};
+
+public getCapabilities = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const capabilities = await this.orchestrator.getAgentCapabilities();
+    res.status(200).json({ success: true, capabilities });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to retrieve capabilities' });
+  }
+};
+
+public healthCheck = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const health = await this.orchestrator.healthCheck();
+    const statusCode = health.status === 'healthy' ? 200 : 503;
+    res.status(statusCode).json({ success: true, health });
+  } catch (err) {
+    res.status(503).json({ success: false, error: 'Health check failed' });
+  }
+};
 
   private cleanupFiles(queryData: QueryData): void {
     queryData.files?.forEach(file => {

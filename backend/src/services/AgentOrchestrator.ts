@@ -247,14 +247,6 @@ export class AgentOrchestrator {
     }
   }
 
-  private sanitizeQueryData(queryData: QueryData): QueryData {
-    return {
-      ...queryData,
-      textQuery: queryData.textQuery?.trim() || '',
-      files: queryData.files?.filter(file => file.size > 0) || []
-    };
-  }
-
   async shutdown(): Promise<void> {
     console.log('🛑 Shutting down Agent Orchestrator...');
     // Cleanup resources, close connections, etc.

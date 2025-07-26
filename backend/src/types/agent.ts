@@ -1,4 +1,5 @@
-// backend/types/agent.ts
+// backend/types/agent.ts (Updated with MCP properties)
+
 export enum AgentType {
   ROUTER = 'router',
   DOCUMENT = 'document',
@@ -6,6 +7,23 @@ export enum AgentType {
   AUDIO = 'audio',
   VIDEO = 'video',
   SYNTHESIS = 'synthesis'
+}
+
+// Updated AgentConfig interface
+export interface AgentConfig {
+  name?: string;
+  type?: AgentType;
+  prompt?: string;
+  mcpServerUrl?: string;        // Added for MCP server URL
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  useOllama?: boolean;
+  openaiApiKey?: string;
+  ollamaBaseUrl?: string;
+  ollamaModel?: string;
+  timeout?: number;
+  fallbackProcessing?: boolean; // Added for fallback mode
 }
 
 export interface IAgentConfig {
@@ -88,6 +106,7 @@ export interface AgentResponse {
   error?: string;
 }
 
+// Updated ProcessedFile interface
 export interface ProcessedFile {
   fileName: string;
   fileType: string;
@@ -95,6 +114,8 @@ export interface ProcessedFile {
   analysis?: any;
   response?: string;
   error?: string;
+  storageId?: string;        // Added for MCP storage ID
+  embeddings?: number[];     // Added for vector embeddings
 }
 
 export interface AgentCapabilities {
@@ -105,6 +126,26 @@ export interface AgentCapabilities {
   processingTime?: string;
   accuracy?: string;
   languages?: string[];
+}
+
+// Updated AudioAnalysis interface
+export interface AudioAnalysis {
+  fileName: string;
+  fileType: string;
+  duration?: number;
+  sampleRate?: number;
+  channels?: number;
+  transcription?: string;
+  language?: string;
+  confidence?: number;
+  contentType?: string;      // Added for content classification
+  sentiment?: string;        // Added for sentiment analysis
+  speakers?: number;         // Added for speaker count
+  keywords?: string[];       // Added for keyword extraction
+  insights?: string;         // Added for AI insights
+  processingMode?: string;   // Added to track processing mode
+  embeddings?: number[];     // Added for vector embeddings
+  similarContent?: any[];    // Added for similar content results
 }
 
 export interface ImageAnalysis {
@@ -121,6 +162,10 @@ export interface ImageAnalysis {
   ocrText: string;
   description: string;
   features: string[];
+  embeddings?: number[];     // Added for vector embeddings
+  objects?: any[];           // Added for detected objects
+  faces?: any[];             // Added for face detection
+  colors?: any[];            // Added for color analysis
 }
 
 export interface DocumentAnalysis {
@@ -131,6 +176,10 @@ export interface DocumentAnalysis {
   wordCount?: number;
   language?: string;
   extractedData?: Record<string, any>;
+  embeddings?: number[];     // Added for vector embeddings
+  entities?: any[];          // Added for named entity recognition
+  topics?: string[];         // Added for topic modeling
+  sentiment?: string;        // Added for sentiment analysis
 }
 
 export interface VideoAnalysis {
@@ -142,27 +191,10 @@ export interface VideoAnalysis {
   transcription?: string;
   scenes?: any[];
   thumbnail?: string;
-}
-
-export interface AudioAnalysis {
-  fileName: string;
-  fileType: string;
-  duration?: number;
-  sampleRate?: number;
-  channels?: number;
-  transcription?: string;
-  language?: string;
-  confidence?: number;
-}
-
-export interface AgentConfig {
-  useOllama?: boolean;
-  openaiApiKey?: string;
-  ollamaBaseUrl?: string;
-  ollamaModel?: string;
-  temperature?: number;
-  maxTokens?: number;
-  timeout?: number;
+  embeddings?: number[];     // Added for vector embeddings
+  audioTrack?: AudioAnalysis; // Added for audio component
+  keyFrames?: any[];         // Added for key frame analysis
+  objects?: any[];           // Added for object detection
 }
 
 export interface OrchestratorResponse extends AgentResponse {
@@ -175,4 +207,26 @@ export interface OrchestratorResponse extends AgentResponse {
     agentUsed: string;
     confidence: number;
   };
+}
+
+// MCP-specific interfaces
+export interface MCPProcessingResult {
+  analysis: any;
+  embeddings?: number[];
+  storageId?: string;
+  processingTime: number;
+  serverUsed: string;
+}
+
+export interface MCPServerHealth {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  latency: number;
+  lastCheck: string;
+  capabilities: string[];
+}
+export interface MCPProcessResponse {
+  success: boolean;
+  data: any; // replace with more specific type if possible
+  error?: string;
+  [key: string]: any;
 }
