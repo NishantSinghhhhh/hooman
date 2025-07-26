@@ -1,255 +1,215 @@
 // backend/services/AgentOrchestrator.ts
 import { RouterAgent } from '../agents/RouterAgent';
-import { DocumentAgent } from '../agents/DocumentAgent';
-import { ImageAgent } from '../agents/ImageAgent';
-import { VideoAgent } from '../agents/VideoAgent';
-import { AudioAgent } from '../agents/AudioAgent';
 import {
   QueryData,
-  AgentResponse,
   AgentConfig,
-  OrchestratorResponse,
   QueryClassification,
   RoutingDecision
 } from '../types/agent';
+import fetch from 'node-fetch'; // Add this import
 
 export class AgentOrchestrator {
   private config: AgentConfig;
   private routerAgent: RouterAgent;
-  private documentAgent: DocumentAgent;
-  private imageAgent: ImageAgent;
-  private videoAgent: VideoAgent;
-  private audioAgent: AudioAgent;
-  private agents: Record<string, DocumentAgent | ImageAgent | VideoAgent | AudioAgent>;
+  private mcpBackendUrl: string;
 
   constructor(config: AgentConfig = {}) {
     this.config = config;
-    
-    // Initialize all agents
     this.routerAgent = new RouterAgent(config);
-    this.documentAgent = new DocumentAgent(config);
-    this.imageAgent = new ImageAgent(config);
-    this.videoAgent = new VideoAgent(config);
-    this.audioAgent = new AudioAgent(config);
-    
-    this.agents = {
-      document: this.documentAgent,
-      image: this.imageAgent,
-      video: this.videoAgent,
-      audio: this.audioAgent
-    };
-
-    console.log('🚀 Agent Orchestrator initialized with TypeScript');
+    this.mcpBackendUrl = process.env.MCP_BACKEND_URL || 'http://localhost:8000';
+    console.log('🚀 Agent Orchestrator initialized - Classification mode');
+    console.log(`📡 MCP Backend URL: ${this.mcpBackendUrl}`);
   }
 
-  async processQuery(queryData: QueryData): Promise<OrchestratorResponse> {
-    const startTime = Date.now();
-    
-    try {
-      console.log('🎯 Starting query processing...');
-      console.log('📊 Query data:', {
-        hasText: !!queryData.textQuery,
-        fileCount: queryData.files?.length || 0,
-        userId: queryData.userId
-      });
+  /**
+   * Classify query and send to MCP backend
+   */
+  async processQuery(queryData: QueryData): Promise<QueryClassification> {
+    console.log('🎯 Starting query classification...');
+    console.log('📊 Query data:', {
+      hasText: !!queryData.textQuery,
+      fileCount: queryData.files?.length || 0,
+      userId: queryData.userId
+    });
 
-      // Step 1: Classify the query
-      console.log('📋 Step 1: Classifying query...');
+    try {
+      // Step 1: Classify the query using RouterAgent
       const classification: QueryClassification = await this.routerAgent.classifyQuery(queryData);
       
-      // Step 2: Route to appropriate agent
-      console.log('🎯 Step 2: Routing to agent...');
+      // Step 2: Get routing decision
       const routing: RoutingDecision = this.routerAgent.routeToAgent(classification);
       
-      // Step 3: Process with specialized agent
-      console.log(`🤖 Step 3: Processing with ${routing.targetAgent}...`);
-      const agentType = classification.agentType;
-      const agent = this.agents[agentType];
-      
-      if (!agent) {
-        throw new Error(`Agent not found: ${agentType}`);
-      }
+      // Step 3: Log the classification result
+      console.log('📋 CLASSIFICATION RESULT:');
+      console.log(`   🎯 Agent Type: ${classification.agentType}`);
+      console.log(`   📂 Classification: ${classification.classification}`);
+      console.log(`   🔍 Reasoning: ${classification.reasoning}`);
+      console.log(`   📊 Confidence: ${Math.round(classification.confidence * 100)}%`);
+      console.log(`   ⚡ Priority: ${classification.priority}`);
+      console.log('─'.repeat(50));
 
-      const result: AgentResponse = await agent.processQuery(queryData);
-      
-      // Step 4: Compile final response
-      const processingTime = Date.now() - startTime;
-      
-      const finalResponse: OrchestratorResponse = {
-        ...result,
-        classification: classification,
-        routing: routing,
-        processingTime: processingTime,
-        timestamp: new Date().toISOString(),
-        orchestrator: {
-          version: '1.0.0',
-          agentUsed: routing.targetAgent,
-          confidence: classification.confidence
-        }
-      };
+      // Step 4: Send classification to MCP backend
+      await this.sendClassificationToMCP(classification, queryData, routing);
 
-      console.log(`✅ Query processing completed in ${processingTime}ms`);
-      return finalResponse;
+      return classification;
 
     } catch (error) {
-      const processingTime = Date.now() - startTime;
-      console.error('❌ Orchestrator error:', error);
+      console.error('❌ Classification error:', error);
       
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        response: "I apologize, but I encountered an error while processing your query. Please try again or contact support if the issue persists.",
-        agentType: 'unknown',
-        classification: {
-          classification: 'TEXT',
-          agentType: 'document',
-          reasoning: 'Error occurred during classification',
-          priority: 'low',
-          confidence: 0.0
-        },
-        routing: {
-          targetAgent: 'DocumentAgent',
-          classification: {
-            classification: 'TEXT',
-            agentType: 'document',
-            reasoning: 'Error fallback',
-            priority: 'low',
-            confidence: 0.0
-          },
-          routingDecision: {
-            agent: 'DocumentAgent',
-            priority: 'low',
-            confidence: 0.0,
-            reasoning: 'Error fallback routing'
-          }
-        },
-        processingTime: processingTime,
-        timestamp: new Date().toISOString(),
-        orchestrator: {
-          version: '1.0.0',
-          agentUsed: 'ErrorHandler',
-          confidence: 0.0
-        }
+      // Fallback classification
+      const fallbackClassification: QueryClassification = {
+        classification: 'TEXT',
+        agentType: 'document',
+        reasoning: `Classification failed: ${error instanceof Error ? error.message : String(error)}`,
+        priority: 'low',
+        confidence: 0.1,
+        hasTextQuery: !!queryData.textQuery,
+        fileCount: queryData.files?.length || 0,
+        timestamp: new Date().toISOString()
       };
+
+      console.log('📋 FALLBACK CLASSIFICATION:');
+      console.log(`   🎯 Agent Type: ${fallbackClassification.agentType}`);
+      console.log(`   🔍 Reasoning: ${fallbackClassification.reasoning}`);
+      
+      // Also send fallback to MCP
+      try {
+        await this.sendClassificationToMCP(fallbackClassification, queryData, null);
+      } catch (mcpError) {
+        console.error('❌ Failed to send fallback to MCP:', mcpError);
+      }
+      
+      return fallbackClassification;
     }
   }
 
-  async getAgentCapabilities(): Promise<Record<string, any>> {
-    return {
-      document: this.documentAgent.getCapabilities(),
-      image: this.imageAgent.getCapabilities(),
-      video: this.videoAgent.getCapabilities(),
-      audio: this.audioAgent.getCapabilities(),
-      orchestrator: {
-        version: '1.0.0',
-        supportedAgents: ['document', 'image', 'video', 'audio'],
-        features: [
-          'Intelligent query classification',
-          'Multi-modal content processing',
-          'Automatic agent routing',
-          'Real-time processing status',
-          'Comprehensive error handling'
-        ]
-      }
-    };
-  }
+// In AgentOrchestrator.ts, update the sendClassificationToMCP method:
 
-  async healthCheck(): Promise<{
-    status: 'healthy' | 'degraded' | 'unhealthy';
-    agents: Record<string, boolean>;
-    timestamp: string;
-  }> {
-    const agentHealth: Record<string, boolean> = {};
+private async sendClassificationToMCP(
+  classification: QueryClassification, 
+  queryData: QueryData, 
+  routing: RoutingDecision | null
+): Promise<void> {
+  try {
+    console.log('📡 Sending classification to MCP backend...');
     
-    try {
-      // Test each agent with a simple query
-      agentHealth.router = true; // Router is always available
-      agentHealth.document = true; // Document agent is always available
-      agentHealth.image = true; // Image agent is always available
-      agentHealth.video = true; // Video agent is always available
-      agentHealth.audio = true; // Audio agent is always available
-      
-      const healthyAgents = Object.values(agentHealth).filter(Boolean).length;
-      const totalAgents = Object.keys(agentHealth).length;
-      
-      let status: 'healthy' | 'degraded' | 'unhealthy';
-      if (healthyAgents === totalAgents) {
-        status = 'healthy';
-      } else if (healthyAgents > totalAgents / 2) {
-        status = 'degraded';
-      } else {
-        status = 'unhealthy';
-      }
+    const payload = {
+      classification,
+      queryData,
+      routing,
+      timestamp: new Date().toISOString(),
+      source: 'typescript_backend'
+    };
 
-      return {
-        status,
-        agents: agentHealth,
+    // Route to specific agent endpoint based on classification
+    let endpoint = '/process-classification';
+    if (classification.agentType === 'image') {
+      endpoint = '/process-image';
+      console.log('🖼️ Routing to Image Agent for Pixeltable processing');
+    }
+
+    const response = await fetch(`${this.mcpBackendUrl}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Successfully processed by MCP backend');
+      // console.log(`📨 Result: ${result.message || result.response}`);
+    } else {
+      console.error(`❌ MCP backend error: ${response.status}`);
+    }
+
+  } catch (error) {
+    console.error('❌ Failed to send to MCP backend:', error);
+  }
+}
+
+  /**
+   * Send files to MCP backend for processing
+   */
+  private async sendFilesToMCP(agentType: string, queryData: QueryData): Promise<void> {
+    try {
+      console.log('📁 Sending files to MCP backend for processing...');
+      
+      // For now, just send file metadata
+      // Later we can send actual file data if needed
+      const filePayload = {
+        agentType: agentType,
+        userId: queryData.userId,
+        queryText: queryData.textQuery || '',
+        files: queryData.files?.map(file => ({
+          filename: file.filename,
+          mimetype: file.mimetype,
+          size: file.size,
+          path: file.path
+        })) || [],
         timestamp: new Date().toISOString()
       };
-      
+
+      const response = await fetch(`${this.mcpBackendUrl}/process-files-metadata`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(filePayload)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ File metadata sent to MCP backend successfully');
+      } else {
+        console.error(`❌ Failed to send files to MCP: ${response.status}`);
+      }
+
     } catch (error) {
-      console.error('Health check failed:', error);
+      console.error('❌ Error sending files to MCP:', error);
+    }
+  }
+
+  /**
+   * Health check for classification service
+   */
+  async healthCheck(): Promise<{
+    status: 'healthy' | 'unhealthy';
+    service: string;
+    timestamp: string;
+    mcpBackend?: string;
+  }> {
+    try {
+      // Test classification with dummy data
+      const testQuery: QueryData = {
+        textQuery: 'health check test',
+        userId: 'health-check',
+        files: []
+      };
+
+      const classification = await this.processQuery(testQuery);
+      
+      // Test MCP backend connectivity
+      let mcpStatus = 'unknown';
+      try {
+        const mcpResponse = await fetch(`${this.mcpBackendUrl}/health`);
+        mcpStatus = mcpResponse.ok ? 'healthy' : 'unhealthy';
+      } catch {
+        mcpStatus = 'unreachable';
+      }
+      
+      return {
+        status: classification.confidence > 0 ? 'healthy' : 'unhealthy',
+        service: 'classification',
+        timestamp: new Date().toISOString(),
+        mcpBackend: mcpStatus
+      };
+    } catch (error) {
       return {
         status: 'unhealthy',
-        agents: agentHealth,
-        timestamp: new Date().toISOString()
+        service: 'classification',
+        timestamp: new Date().toISOString(),
+        mcpBackend: 'error'
       };
     }
-  }
-
-  async getMetrics(): Promise<{
-    totalQueries: number;
-    agentUsage: Record<string, number>;
-    averageProcessingTime: number;
-    errorRate: number;
-  }> {
-    // In a real implementation, these would come from a metrics store
-    return {
-      totalQueries: 0,
-      agentUsage: {
-        document: 0,
-        image: 0,
-        video: 0,
-        audio: 0
-      },
-      averageProcessingTime: 0,
-      errorRate: 0
-    };
-  }
-
-  // MCP Integration methods
-  async connectAllMCPServers(): Promise<void> {
-    console.log('📡 Connecting to all MCP servers...');
-    
-    try {
-      await Promise.all([
-        this.documentAgent.connectToMCP(),
-        this.imageAgent.connectToMCP(),
-        this.videoAgent.connectToMCP(),
-        this.audioAgent.connectToMCP()
-      ]);
-      
-      console.log('✅ All MCP servers connected successfully');
-    } catch (error) {
-      console.error('❌ Failed to connect to some MCP servers:', error);
-      throw error;
-    }
-  }
-
-  // Utility methods
-  private validateQueryData(queryData: QueryData): void {
-    if (!queryData.userId) {
-      throw new Error('User ID is required');
-    }
-    
-    if (!queryData.textQuery && (!queryData.files || queryData.files.length === 0)) {
-      throw new Error('Either text query or files must be provided');
-    }
-  }
-
-  async shutdown(): Promise<void> {
-    console.log('🛑 Shutting down Agent Orchestrator...');
-    // Cleanup resources, close connections, etc.
-    console.log('✅ Agent Orchestrator shutdown complete');
   }
 }

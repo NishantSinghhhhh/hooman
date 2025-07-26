@@ -1,7 +1,8 @@
 // backend/controllers/queryController.ts
+
 import { Request, Response } from 'express';
 import { AgentOrchestrator } from '../services/AgentOrchestrator';
-import { QueryData, OrchestratorResponse } from '../types/agent';
+import { QueryData, QueryClassification } from '../types/agent';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import path from 'path';
@@ -29,8 +30,18 @@ const upload = multer({
   }
 });
 
+// Store query results and status
+interface QueryResult {
+  queryId: string;
+  userId: string;
+  classification: QueryClassification;
+  timestamp: string;
+  status: 'processing' | 'completed' | 'error';
+  error?: string;
+  processingTime?: number;
+}
 
-const queryResults: Map<string, OrchestratorResponse> = new Map();
+const queryResults: Map<string, QueryResult> = new Map();
 const queryStatus: Map<string, 'processing' | 'completed' | 'error'> = new Map();
 
 class QueryController {
@@ -45,61 +56,47 @@ class QueryController {
       temperature: 0.3,
     });
 
-    this.initializeMCP();
-  }
-
-  private async initializeMCP(): Promise<void> {
-    try {
-      await this.orchestrator.connectAllMCPServers();
-      console.log('✅ MCP servers initialized successfully');
-    } catch (error) {
-      console.warn('⚠️ Some MCP servers failed to initialize:', error);
-    }
+    console.log('✅ QueryController initialized with AgentOrchestrator');
   }
 
   public uploadMiddleware = upload.array('files', 10);
 
-// backend/controllers/queryController.ts
+  public submitQuery = async (req: Request, res: Response): Promise<void> => {
+    try {
+      console.log("-----------------------------------------");
+      console.log("📡 INCOMING QUERY REQUEST RECEIVED 📡");
+      console.log("-----------------------------------------");
+      console.log("Request Body (req.body):", req.body);
+      console.log("Uploaded Files (req.files):", req.files);
+      console.log("Authenticated User (req.user):", req.user);
+      console.log("-----------------------------------------");
 
-public submitQuery = async (req: Request, res: Response): Promise<void> => {
-  try {
-    // ✅ --- Start of Logging ---
-    console.log("-----------------------------------------");
-    console.log("📡 INCOMING QUERY REQUEST RECEIVED 📡");
-    console.log("-----------------------------------------");
-    console.log("Request Body (req.body):", req.body);
-    console.log("Uploaded Files (req.files):", req.files);
-    console.log("Authenticated User (req.user):", req.user);
-    console.log("-----------------------------------------");
-    // ✅ --- End of Logging ---
+      const { textQuery, userId } = req.body;
+      const files = req.files as Express.Multer.File[];
 
- const { textQuery, userId } = req.body;
-    const files = req.files as Express.Multer.File[];
+      // Authentication check
+      if (!req.user || req.user._id.toString() !== userId) {
+        res.status(403).json({
+          success: false,
+          error: 'Unauthorized: User ID mismatch'
+        });
+        return;
+      }
 
-    // ✅ FIX: Check against req.user._id and convert it to a string
-    if (!req.user || req.user._id.toString() !== userId) {
-      res.status(403).json({
-        success: false,
-        error: 'Unauthorized: User ID mismatch'
-      });
-      return;
-    }
+      // Validation
+      if ((!textQuery || !textQuery.trim()) && (!files || files.length === 0)) {
+        res.status(400).json({
+          success: false,
+          error: 'Query must include text or files',
+        });
+        return;
+      }
 
-    // Validate presence of text or files
-    if ((!textQuery || !textQuery.trim()) && (!files || files.length === 0)) {
-      res.status(400).json({
-        success: false,
-        error: 'Query must include text or files',
-      });
-      return;
-    }
+      const queryId = uuidv4();
 
-    const queryId = uuidv4();
-
-    const queryData: QueryData = {
-      textQuery: textQuery || '',
-      files:
-        files?.map(file => ({
+      const queryData: QueryData = {
+        textQuery: textQuery || '',
+        files: files?.map(file => ({
           filename: file.originalname,
           path: file.path,
           mimetype: file.mimetype,
@@ -108,287 +105,384 @@ public submitQuery = async (req: Request, res: Response): Promise<void> => {
           originalname: file.originalname,
           encoding: file.encoding,
         })) || [],
-      userId,
-      queryId,
-      metadata: {
-        timestamp: new Date().toISOString(),
-        userAgent: req.get('User-Agent'),
-        ip: req.ip,
-      }
-    };
+        userId,
+        queryId,
+        metadata: {
+          timestamp: new Date().toISOString(),
+          userAgent: req.get('User-Agent'),
+          ip: req.ip,
+        }
+      };
 
-    console.log(`📥 New query submitted: ${queryId}`);
-    console.log(`👤 User: ${userId}`);
-    console.log(`📝 Text: ${textQuery?.substring(0, 100)}...`);
-    console.log(`📁 Files: ${files?.length || 0}`);
+      console.log(`📥 New query submitted: ${queryId}`);
+      console.log(`👤 User: ${userId}`);
+      console.log(`📝 Text: ${textQuery?.substring(0, 100)}...`);
+      console.log(`📁 Files: ${files?.length || 0}`);
 
-    queryStatus.set(queryId, 'processing');
+      queryStatus.set(queryId, 'processing');
 
-    // Process query asynchronously
-    this.processQueryAsync(queryId, queryData);
+      // Process query asynchronously
+      this.processQueryAsync(queryId, queryData);
 
-    res.status(202).json({
-      success: true,
-      queryId,
-      status: 'processing',
-      message: 'Query submitted successfully. Use the query ID to check status.',
-      estimatedTime: this.estimateProcessingTime(queryData),
-    });
-
-  } catch (error) {
-    console.error('❌ Submit query error:', error);
-    if (req.files) {
-      const files = req.files as Express.Multer.File[];
-      files.forEach(file => {
-        fs.unlink(file.path, (err) => {
-          if (err) console.warn(`Failed to cleanup file: ${file.path}`, err);
+      res.status(202).json({
+        success: true,
+        queryId,
+        status: 'processing',
+        message: 'Query submitted successfully. Use the query ID to check status.',
+        estimatedTime: this.estimateProcessingTime(queryData),
+      });
+    } catch (error) {
+      console.error('❌ Submit query error:', error);
+      if (req.files) {
+        const files = req.files as Express.Multer.File[];
+        files.forEach(file => {
+          fs.unlink(file.path, (err) => {
+            if (err) console.warn(`Failed to cleanup file: ${file.path}`, err);
+          });
         });
+      }
+      res.status(500).json({
+        success: false,
+        error: 'Failed to submit query',
+        details: error instanceof Error ? error.message : String(error),
       });
     }
-    res.status(500).json({
-      success: false,
-      error: 'Failed to submit query',
-      details: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
+  };
 
-private async processQueryAsync(queryId: string, queryData: QueryData): Promise<void> {
-  try {
-    console.log(`🔄 Processing query ${queryId}...`);
+  private async processQueryAsync(queryId: string, queryData: QueryData): Promise<void> {
+    const startTime = Date.now();
+    
+    try {
+      console.log(`🔄 Processing query ${queryId}...`);
 
-    // This internally will:
-    // 1) Classify (document, image, video, audio)
-    // 2) Route query to the appropriate agent
-    // 3) Execute agent processing
-    const result = await this.orchestrator.processQuery(queryData);
+      // Use AgentOrchestrator to classify and route the query
+      const classification = await this.orchestrator.processQuery(queryData);
 
-    // Log the full result object
-    console.log(`📊 Query ${queryId} processing result:`, result);
+      const processingTime = Date.now() - startTime;
 
-    queryResults.set(queryId, {
-      ...result,
-      metadata: {
-        ...result.metadata,
+      console.log(`📊 Query ${queryId} classification result:`, classification);
+
+      // Store the result
+      const queryResult: QueryResult = {
         queryId,
         userId: queryData.userId,
-      }
-    });
-    queryStatus.set(queryId, result.success ? 'completed' : 'error');
+        classification,
+        timestamp: new Date().toISOString(),
+        status: 'completed',
+        processingTime
+      };
 
-    console.log(`✅ Query ${queryId} completed successfully`);
+      queryResults.set(queryId, queryResult);
+      queryStatus.set(queryId, 'completed');
 
-    this.cleanupFiles(queryData);
-  } catch (error) {
-    console.error(`❌ Query ${queryId} processing failed:`, error);
+      console.log(`✅ Query ${queryId} completed successfully`);
+      console.log(`⏱️  Processing time: ${processingTime}ms`);
 
-    queryStatus.set(queryId, 'error');
-    queryResults.set(queryId, {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-      response: 'Processing failed due to an internal error',
-      agentType: 'error',
-      classification: {
-        classification: 'TEXT',
-        agentType: 'document',
-        reasoning: 'Error during processing',
-        priority: 'low',
-        confidence: 0.0,
-      },
-      routing: {
-        targetAgent: 'ErrorHandler',
+      // Cleanup files after processing
+      this.cleanupFiles(queryData);
+
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      
+      console.error(`❌ Query ${queryId} processing failed:`, error);
+
+      queryStatus.set(queryId, 'error');
+
+      // Create error result
+      const errorResult: QueryResult = {
+        queryId,
+        userId: queryData.userId,
         classification: {
           classification: 'TEXT',
           agentType: 'document',
-          reasoning: 'Error fallback',
+          reasoning: `Processing failed: ${error instanceof Error ? error.message : String(error)}`,
           priority: 'low',
           confidence: 0.0,
+          hasTextQuery: !!queryData.textQuery,
+          fileCount: queryData.files?.length || 0,
+          timestamp: new Date().toISOString()
         },
-        routingDecision: {
-          agent: 'ErrorHandler',
-          priority: 'low',
-          confidence: 0.0,
-          reasoning: 'Error occurred',
-        },
-      },
-      processingTime: 0,
-      timestamp: new Date().toISOString(),
-      orchestrator: {
-        version: '1.0.0',
-        agentUsed: 'ErrorHandler',
-        confidence: 0.0,
-      },
-      metadata: {
-        queryId,
-        userId: queryData.userId,
-        error: true,
-      },
-    });
+        timestamp: new Date().toISOString(),
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        processingTime
+      };
 
-    this.cleanupFiles(queryData);
+      queryResults.set(queryId, errorResult);
+
+      // Cleanup files
+      this.cleanupFiles(queryData);
+    }
   }
-}
 
-public getQueryResult = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { queryId } = req.params;
-    // (Assume req.user is set by auth middleware)
-    const userId = (req as any).user?.userId || (req as any).user?._id ;
-    if (!userId) {
-      res.status(401).json({ success: false, error: 'Authentication required' });
-      return;
-    }
+  public getQueryResult = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { queryId } = req.params;
+      const userId = (req as any).user?.userId || (req as any).user?._id?.toString();
+      
+      if (!userId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
 
-    const status = queryStatus.get(queryId);
-    const result = queryResults.get(queryId);
+      const status = queryStatus.get(queryId);
+      const result = queryResults.get(queryId);
 
-    if (!status) {
-      res.status(404).json({ success: false, error: 'Query not found' });
-      return;
-    }
-    if (result?.metadata?.userId !== userId) {
-      res.status(403).json({ success: false, error: 'Unauthorized' });
-      return;
-    }
-    if (status === 'processing') {
-      res.status(202).json({ success: true, status: 'processing' });
-      return;
-    }
-    if (status === 'completed') {
-      res.status(200).json({ success: true, status: 'completed', result });
-      return;
-    }
-    // status === 'error'
-    res.status(500).json({ success: false, status: 'error', error: result?.error || 'Processing failed' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to retrieve query result' });
-  }
-};
+      if (!status) {
+        res.status(404).json({ success: false, error: 'Query not found' });
+        return;
+      }
 
-public getQueryStatus = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { queryId } = req.params;
-    const userId = (req as any).user?.userId || (req as any).user?._id?.toString();
-    
-    if (!userId) {
-      res.status(401).json({ success: false, error: 'Authentication required' });
-      return;
-    }
+      if (result?.userId !== userId) {
+        res.status(403).json({ success: false, error: 'Unauthorized' });
+        return;
+      }
 
-    const status = queryStatus.get(queryId);
-    const result = queryResults.get(queryId);
+      if (status === 'processing') {
+        res.status(202).json({ 
+          success: true, 
+          status: 'processing',
+          message: 'Query is still being processed'
+        });
+        return;
+      }
 
-    if (!status) {
-      res.status(404).json({ success: false, error: 'Query not found' });
-      return;
-    }
+      if (status === 'completed' && result) {
+        res.status(200).json({ 
+          success: true, 
+          status: 'completed', 
+          result: {
+            queryId: result.queryId,
+            classification: result.classification,
+            agentType: result.classification.agentType,
+            reasoning: result.classification.reasoning,
+            confidence: result.classification.confidence,
+            priority: result.classification.priority,
+            processingTime: result.processingTime,
+            timestamp: result.timestamp
+          }
+        });
+        return;
+      }
 
-    // Check if user owns this query
-    if (result?.metadata?.userId !== userId) {
-      res.status(403).json({ success: false, error: 'Unauthorized' });
-      return;
-    }
+      if (status === 'error' && result) {
+        res.status(200).json({
+          success: true,
+          status: 'failed',
+          error: result.error || 'Processing failed',
+          result: {
+            queryId: result.queryId,
+            classification: result.classification,
+            agentType: result.classification.agentType,
+            error: result.error,
+            processingTime: result.processingTime,
+            timestamp: result.timestamp
+          }
+        });
+        return;
+      }
 
-    if (status === 'processing') {
-      res.status(200).json({ 
-        success: true, 
-        status: 'processing',
-        message: 'Query is still being processed'
+      res.status(500).json({ 
+        success: false, 
+        error: 'Unknown query status' 
       });
-      return;
-    }
 
-    if (status === 'completed' && result) {
+    } catch (error) {
+      console.error('Error getting query result:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to retrieve query result' 
+      });
+    }
+  };
+
+  public getQueryStatus = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { queryId } = req.params;
+      const userId = (req as any).user?.userId || (req as any).user?._id?.toString();
+      
+      if (!userId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const status = queryStatus.get(queryId);
+      const result = queryResults.get(queryId);
+
+      if (!status) {
+        res.status(404).json({ success: false, error: 'Query not found' });
+        return;
+      }
+
+      if (result?.userId !== userId) {
+        res.status(403).json({ success: false, error: 'Unauthorized' });
+        return;
+      }
+
+      if (status === 'processing') {
+        res.status(200).json({
+          success: true,
+          status: 'processing',
+          message: 'Query is still being processed',
+        });
+        return;
+      }
+
+      if (status === 'completed' && result) {
+        res.status(200).json({
+          success: true,
+          status: 'completed',
+          result: {
+            agentType: result.classification.agentType,
+            classification: result.classification.classification,
+            reasoning: result.classification.reasoning,
+            confidence: Math.round(result.classification.confidence * 100),
+            priority: result.classification.priority,
+            processingTime: result.processingTime || 0,
+            timestamp: result.timestamp,
+          }
+        });
+        return;
+      }
+
+      if (status === 'error') {
+        res.status(200).json({
+          success: true,
+          status: 'failed',
+          error: result?.error || 'Processing failed',
+          result: {
+            agentType: result?.classification.agentType || 'unknown',
+            error: result?.error,
+            processingTime: result?.processingTime || 0,
+            timestamp: result?.timestamp,
+          }
+        });
+        return;
+      }
+    } catch (error) {
+      console.error('Error getting query status:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get query status'
+      });
+    }
+  };
+
+  public getQueryHistory = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { userId } = req.params;
+      const currentUserId = (req as any).user?.userId || (req as any).user?._id?.toString();
+      
+      if (userId !== currentUserId) {
+        res.status(403).json({ success: false, error: 'Unauthorized: User ID mismatch' });
+        return;
+      }
+
+      const userQueries = Array.from(queryResults.values())
+        .filter(q => q.userId === userId)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 50);
+
       res.status(200).json({
         success: true,
-        status: 'completed',
-        result: {
-          response: result.response,
-          agentType: result.agentType,
-          processingTime: result.processingTime ?? 0,  // Fallback to 0 if undefined
-          timestamp: result.timestamp
-        }
+        queries: userQueries.map(q => ({
+          queryId: q.queryId,
+          timestamp: q.timestamp,
+          agentType: q.classification.agentType,
+          classification: q.classification.classification,
+          status: q.status,
+          confidence: Math.round(q.classification.confidence * 100),
+          priority: q.classification.priority,
+          reasoning: q.classification.reasoning.substring(0, 200) + '...',
+          processingTime: q.processingTime,
+          error: q.error
+        }))
       });
-      return;
+    } catch (error) {
+      console.error('Error getting query history:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to retrieve query history' 
+      });
     }
-    
-    if (status === 'error') {
+  };
+
+  public getCapabilities = async (req: Request, res: Response): Promise<void> => {
+    try {
+      // Since AgentOrchestrator doesn't have getAgentCapabilities, 
+      // we'll return static capabilities based on what we know
+      const capabilities = {
+        classification: {
+          supportedTypes: ['TEXT', 'DOCUMENT', 'IMAGE', 'VIDEO', 'AUDIO'],
+          agents: ['document', 'image', 'video', 'audio'],
+          maxFileSize: '100MB',
+          maxFiles: 10
+        },
+        routing: {
+          mcpBackend: process.env.MCP_BACKEND_URL || 'http://localhost:8000',
+          supportedFormats: {
+            image: ['.jpg', '.jpeg', '.png', '.gif', '.bmp'],
+            video: ['.mp4', '.avi', '.mov', '.mkv'],
+            audio: ['.mp3', '.wav', '.m4a', '.flac'],
+            document: ['.txt', '.pdf', '.docx', '.doc']
+          }
+        },
+        features: {
+          realTimeClassification: true,
+          batchProcessing: false,
+          asyncProcessing: true,
+          fileUpload: true,
+          textQuery: true,
+          multimodal: true
+        }
+      };
+
       res.status(200).json({ 
         success: true, 
-        status: 'failed', 
-        error: result?.error || 'Processing failed',
-        result: {
-          response: result?.response || 'An error occurred during processing',
-          agentType: result?.agentType || 'unknown',
-          error: result?.error
+        capabilities,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error getting capabilities:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to retrieve capabilities' 
+      });
+    }
+  };
+
+  public healthCheck = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const health = await this.orchestrator.healthCheck();
+      const statusCode = health.status === 'healthy' ? 200 : 503;
+      
+      res.status(statusCode).json({ 
+        success: true, 
+        health: {
+          ...health,
+          controller: 'QueryController',
+          uptime: process.uptime(),
+          memory: process.memoryUsage(),
+          queryCount: queryResults.size
         }
       });
-      return;
+    } catch (err) {
+      console.error('Health check failed:', err);
+      res.status(503).json({ 
+        success: false, 
+        error: 'Health check failed',
+        details: err instanceof Error ? err.message : String(err)
+      });
     }
-
-  } catch (error) {
-    console.error('Error getting query status:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to get query status' 
-    });
-  }
-};
-
-public getQueryHistory = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { userId } = req.params;
-    const currentUserId = (req as any).user?.userId || (req as any).user._id;
-    if (userId !== currentUserId) {
-      res.status(403).json({ success: false, error: 'Unauthorized: User ID mismatch' });
-      return;
-    }
-    // Get up to last 50 queries
-    const userQueries = Array.from(queryResults.values())
-      .filter(q => q.metadata?.userId === userId)
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 50);
-
-    res.status(200).json({
-      success: true,
-      queries: userQueries.map(q => ({
-        queryId: q.metadata?.queryId,
-        timestamp: q.timestamp,
-        agentType: q.agentType,
-        status: q.success ? 'completed' : 'error',
-        preview: q.response?.substring(0, 200) + '...',
-        processingTime: q.processingTime,
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to retrieve query history' });
-  }
-};
-
-public getCapabilities = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const capabilities = await this.orchestrator.getAgentCapabilities();
-    res.status(200).json({ success: true, capabilities });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to retrieve capabilities' });
-  }
-};
-
-public healthCheck = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const health = await this.orchestrator.healthCheck();
-    const statusCode = health.status === 'healthy' ? 200 : 503;
-    res.status(statusCode).json({ success: true, health });
-  } catch (err) {
-    res.status(503).json({ success: false, error: 'Health check failed' });
-  }
-};
+  };
 
   private cleanupFiles(queryData: QueryData): void {
     queryData.files?.forEach(file => {
       fs.unlink(file.path, (err) => {
         if (err) {
           console.warn(`Failed to cleanup file: ${file.path}`, err);
+        } else {
+          console.log(`🗑️  Cleaned up file: ${file.filename}`);
         }
       });
     });
@@ -398,12 +492,41 @@ public healthCheck = async (req: Request, res: Response): Promise<void> => {
     const fileCount = queryData.files?.length || 0;
     const hasVideo = queryData.files?.some(f => f.mimetype.startsWith('video/'));
     const hasAudio = queryData.files?.some(f => f.mimetype.startsWith('audio/'));
+    const hasImages = queryData.files?.some(f => f.mimetype.startsWith('image/'));
 
     if (hasVideo) return '30-120 seconds';
     if (hasAudio) return '15-60 seconds';
+    if (hasImages && fileCount > 3) return '10-30 seconds';
     if (fileCount > 5) return '20-45 seconds';
     if (fileCount > 0) return '5-20 seconds';
     return '2-10 seconds';
+  }
+
+  // Additional utility methods
+  public clearExpiredQueries(): void {
+    const now = Date.now();
+    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+
+    for (const [queryId, result] of queryResults.entries()) {
+      const queryTime = new Date(result.timestamp).getTime();
+      if (now - queryTime > maxAge) {
+        queryResults.delete(queryId);
+        queryStatus.delete(queryId);
+        console.log(`🗑️  Expired query removed: ${queryId}`);
+      }
+    }
+  }
+
+  public getStats(): object {
+    const statuses = Array.from(queryStatus.values());
+    return {
+      totalQueries: queryResults.size,
+      processing: statuses.filter(s => s === 'processing').length,
+      completed: statuses.filter(s => s === 'completed').length,
+      failed: statuses.filter(s => s === 'error').length,
+      memoryUsage: process.memoryUsage(),
+      uptime: process.uptime()
+    };
   }
 }
 

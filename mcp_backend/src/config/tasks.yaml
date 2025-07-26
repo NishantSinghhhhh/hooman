@@ -1,0 +1,125 @@
+# config/tasks.yaml - Set up agent tasks and workflows
+
+routing_task:
+  description: |
+    Analyze the incoming query and determine the best specialist agent to handle it.
+    
+    Query Details:
+    - Content: {content}
+    - Media Type: {media_type}
+    - File Count: {file_count}
+    
+    You must return your routing decision as JSON with:
+    - recommended_agent: (document|image|audio|video)
+    - confidence: (0.0-1.0)
+    - reasoning: (detailed explanation)
+    - priority: (high|medium|low)
+  expected_output: "JSON routing decision with agent recommendation"
+  agent: router_agent
+
+document_processing_task:
+  description: |
+    Process the text/document content and provide detailed analysis.
+    
+    Content to analyze: {content}
+    
+    Your analysis should include:
+    - Key topics and themes
+    - Important entities (people, places, organizations)
+    - Sentiment analysis
+    - Summary of main points
+    - Actionable insights
+    
+    Use the MCP document server to index and search this content.
+  expected_output: "Comprehensive document analysis with key insights and semantic information"
+  agent: document_agent
+
+image_processing_task:
+  description: |
+    Analyze the image content and extract comprehensive visual insights.
+    
+    Image to analyze: {content}
+    
+    Your analysis should include:
+    - Object detection and identification
+    - Scene description
+    - Text extraction (OCR if applicable)
+    - Color analysis and mood
+    - Visual concepts and tags
+    - Potential use cases
+    
+    Use the MCP image server for visual processing and indexing.
+  expected_output: "Detailed image analysis with visual concepts, objects, and semantic tags"
+  agent: image_agent
+
+audio_processing_task:
+  description: |
+    Process the audio content and extract meaningful information.
+    
+    Audio file to analyze: {content}
+    
+    Your analysis should include:
+    - Speech transcription (if applicable)
+    - Speaker identification
+    - Audio quality assessment
+    - Mood and tone analysis
+    - Key timestamps and segments
+    - Background sounds or music identification
+    
+    Use the MCP audio server for audio processing and analysis.
+  expected_output: "Complete audio analysis with transcription, speaker info, and audio insights"
+  agent: audio_agent
+
+video_processing_task:
+  description: |
+    Analyze the video content and provide comprehensive insights.
+    
+    Video file to analyze: {content}
+    
+    Your analysis should include:
+    - Key frame extraction and analysis
+    - Motion pattern detection
+    - Audio track transcription
+    - Scene changes and timestamps
+    - Object tracking
+    - Video quality metrics
+    - Content summarization
+    
+    Use the MCP video server for video processing and analysis.
+  expected_output: "Comprehensive video analysis with frame analysis, motion detection, and content summary"
+  agent: video_agent
+
+synthesis_task:
+  description: |
+    Take the routing decision and processing results and create a user-friendly response.
+    
+    Routing Decision: {routing_result}
+    Processing Results: {processing_result}
+    
+    Create a comprehensive response that includes:
+    - Executive summary of findings
+    - Key insights in bullet points
+    - Relevant metadata and confidence scores
+    - Actionable recommendations
+    - Technical details in appendix
+    
+    Format the response to be clear, scannable, and valuable to the user.
+  expected_output: "Polished, user-friendly report with executive summary and actionable insights"
+  agent: synthesis_agent
+
+# Workflow definitions
+multimodal_analysis_workflow:
+  description: "Complete multimodal analysis pipeline"
+  tasks:
+    - routing_task
+    - conditional_processing_task  # This will be determined by routing
+    - synthesis_task
+  process: "sequential"
+  verbose: true
+
+quick_classification_workflow:
+  description: "Fast classification for real-time routing"
+  tasks:
+    - routing_task
+  process: "sequential"
+  verbose: false
