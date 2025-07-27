@@ -1,125 +1,103 @@
-# config/tasks.yaml - Set up agent tasks and workflows
+classify_query_task:
+  description: >
+    Analyze the incoming user query and uploaded content to determine the primary media type.
+    Classify as one of: 'text', 'image', 'audio', 'video', or 'mixed'.
+    Consider both the uploaded file type and the nature of the user's question.
+    
+    Input: {query_text}, {file_info}
+    
+    Provide classification with confidence score and reasoning.
+  expected_output: >
+    A classification result containing:
+    - media_type: The primary media type detected
+    - confidence: Confidence score (0-1)
+    - reasoning: Brief explanation of classification decision
+    - recommended_agent: Which specialist agent should handle this
 
-routing_task:
-  description: |
-    Analyze the incoming query and determine the best specialist agent to handle it.
+process_document_task:
+  description: >
+    Process text documents, PDFs, or written content using document analysis tools.
+    Extract key information, perform semantic search, and identify important concepts.
     
-    Query Details:
-    - Content: {content}
-    - Media Type: {media_type}
-    - File Count: {file_count}
+    Query: {query_text}
+    File: {file_path}
     
-    You must return your routing decision as JSON with:
-    - recommended_agent: (document|image|audio|video)
-    - confidence: (0.0-1.0)
-    - reasoning: (detailed explanation)
-    - priority: (high|medium|low)
-  expected_output: "JSON routing decision with agent recommendation"
-  agent: router_agent
+    Use document processing capabilities to provide comprehensive analysis.
+  expected_output: >
+    Document analysis results including:
+    - extracted_text: Key text content found
+    - key_concepts: Important concepts identified
+    - summary: Brief summary of content
+    - semantic_matches: Relevant semantic search results
+    - metadata: Document properties and statistics
 
-document_processing_task:
-  description: |
-    Process the text/document content and provide detailed analysis.
+process_image_task:
+  description: >
+    Analyze uploaded images using computer vision capabilities.
+    Identify objects, extract text, analyze visual features, and provide detailed descriptions.
     
-    Content to analyze: {content}
+    Query: {query_text}
+    Image: {file_path}
     
-    Your analysis should include:
-    - Key topics and themes
-    - Important entities (people, places, organizations)
-    - Sentiment analysis
-    - Summary of main points
-    - Actionable insights
-    
-    Use the MCP document server to index and search this content.
-  expected_output: "Comprehensive document analysis with key insights and semantic information"
-  agent: document_agent
+    Use image analysis tools for comprehensive visual content understanding.
+  expected_output: >
+    Image analysis results including:
+    - objects_detected: List of identified objects with confidence scores
+    - scene_description: Overall description of the image
+    - text_extracted: Any text found in the image (OCR)
+    - visual_features: Key visual characteristics
+    - semantic_tags: Relevant semantic tags for indexing
 
-image_processing_task:
-  description: |
-    Analyze the image content and extract comprehensive visual insights.
+process_video_task:
+  description: >
+    Process video files by extracting key frames, analyzing motion, and understanding content.
+    Identify scenes, objects in motion, and temporal changes.
     
-    Image to analyze: {content}
+    Query: {query_text}
+    Video: {file_path}
     
-    Your analysis should include:
-    - Object detection and identification
-    - Scene description
-    - Text extraction (OCR if applicable)
-    - Color analysis and mood
-    - Visual concepts and tags
-    - Potential use cases
-    
-    Use the MCP image server for visual processing and indexing.
-  expected_output: "Detailed image analysis with visual concepts, objects, and semantic tags"
-  agent: image_agent
+    Use video processing tools for temporal visual analysis.
+  expected_output: >
+    Video analysis results including:
+    - key_frames: Important frames extracted with timestamps
+    - scene_changes: Detected scene transitions
+    - motion_analysis: Movement and activity detected
+    - objects_tracked: Objects identified across frames
+    - video_summary: Overall content summary
 
-audio_processing_task:
-  description: |
-    Process the audio content and extract meaningful information.
+process_audio_task:
+  description: >
+    Process audio files through transcription, speaker identification, and audio analysis.
+    Convert speech to text and analyze audio characteristics.
     
-    Audio file to analyze: {content}
+    Query: {query_text}
+    Audio: {file_path}
     
-    Your analysis should include:
-    - Speech transcription (if applicable)
-    - Speaker identification
-    - Audio quality assessment
-    - Mood and tone analysis
-    - Key timestamps and segments
-    - Background sounds or music identification
-    
-    Use the MCP audio server for audio processing and analysis.
-  expected_output: "Complete audio analysis with transcription, speaker info, and audio insights"
-  agent: audio_agent
+    Use audio processing tools for comprehensive audio analysis.
+  expected_output: >
+    Audio analysis results including:
+    - transcript: Full transcription of speech content
+    - speakers: Identified speakers (if multiple)
+    - audio_quality: Technical audio properties
+    - key_phrases: Important phrases or keywords
+    - sentiment: Emotional tone analysis
+    - timestamps: Time-aligned transcription segments
 
-video_processing_task:
-  description: |
-    Analyze the video content and provide comprehensive insights.
+synthesize_response_task:
+  description: >
+    Take the processed results from specialist agents and create a comprehensive,
+    user-friendly response. Organize information clearly and highlight key insights.
     
-    Video file to analyze: {content}
+    Original Query: {query_text}
+    Processing Results: {agent_results}
+    Media Type: {media_type}
     
-    Your analysis should include:
-    - Key frame extraction and analysis
-    - Motion pattern detection
-    - Audio track transcription
-    - Scene changes and timestamps
-    - Object tracking
-    - Video quality metrics
-    - Content summarization
-    
-    Use the MCP video server for video processing and analysis.
-  expected_output: "Comprehensive video analysis with frame analysis, motion detection, and content summary"
-  agent: video_agent
-
-synthesis_task:
-  description: |
-    Take the routing decision and processing results and create a user-friendly response.
-    
-    Routing Decision: {routing_result}
-    Processing Results: {processing_result}
-    
-    Create a comprehensive response that includes:
-    - Executive summary of findings
-    - Key insights in bullet points
-    - Relevant metadata and confidence scores
-    - Actionable recommendations
-    - Technical details in appendix
-    
-    Format the response to be clear, scannable, and valuable to the user.
-  expected_output: "Polished, user-friendly report with executive summary and actionable insights"
-  agent: synthesis_agent
-
-# Workflow definitions
-multimodal_analysis_workflow:
-  description: "Complete multimodal analysis pipeline"
-  tasks:
-    - routing_task
-    - conditional_processing_task  # This will be determined by routing
-    - synthesis_task
-  process: "sequential"
-  verbose: true
-
-quick_classification_workflow:
-  description: "Fast classification for real-time routing"
-  tasks:
-    - routing_task
-  process: "sequential"
-  verbose: false
+    Create a well-structured response that directly addresses the user's question.
+  expected_output: >
+    A comprehensive response containing:
+    - direct_answer: Direct response to user's query
+    - key_insights: Most important findings
+    - detailed_results: Organized detailed analysis
+    - confidence_score: Overall confidence in results
+    - additional_info: Any relevant supplementary information
+    - processing_metadata: Information about how the query was processed

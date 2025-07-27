@@ -1,0 +1,27 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "my-project"
+version = "0.1.0"
+description = "Multimodal AI Assistant with CrewAI and MCP Servers"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.10,<=3.13"
+crewai = "^0.150.0"
+crewai-tools = {extras = ["mcp"], version = "^0.58.0"}
+fastapi = "^0.116.1"
+uvicorn = "^0.24.0"
+python-multipart = ">=0.0.9"
+python-dotenv = "^1.0.0"
+pydantic = "^2.5.0"
+httpx = "^0.27.0"
+pypdf2 = "^3.0.1"
+python-docx = "^1.2.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^23.11.0"
+isort = "^5.12.0"
