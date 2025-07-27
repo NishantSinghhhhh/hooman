@@ -16,7 +16,7 @@ export class AgentOrchestrator {
   constructor(config: AgentConfig = {}) {
     this.config = config;
     this.routerAgent = new RouterAgent(config);
-    this.mcpBackendUrl = process.env.MCP_BACKEND_URL || 'http://localhost:8000';
+    this.mcpBackendUrl = process.env.MCP_BACKEND_URL || 'http://localhost:8001';
     console.log('🚀 Agent Orchestrator initialized - Classification mode');
     console.log(`📡 MCP Backend URL: ${this.mcpBackendUrl}`);
   }
@@ -83,95 +83,216 @@ export class AgentOrchestrator {
     }
   }
 
-// In AgentOrchestrator.ts, update the sendClassificationToMCP method:
-
-private async sendClassificationToMCP(
-  classification: QueryClassification, 
-  queryData: QueryData, 
-  routing: RoutingDecision | null
-): Promise<void> {
-  try {
-    console.log('📡 Sending classification to MCP backend...');
-    
+  private async sendTextRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
     const payload = {
-      classification,
-      queryData,
-      routing,
-      timestamp: new Date().toISOString(),
-      source: 'typescript_backend'
+      query: queryData.textQuery || '',
+      user_id: queryData.userId
     };
-
-    // Route to specific agent endpoint based on classification
-    let endpoint = '/process-classification';
-    if (classification.agentType === 'image') {
-      endpoint = '/process-image';
-      console.log('🖼️ Routing to Image Agent for Pixeltable processing');
-    }
-
-    const response = await fetch(`${this.mcpBackendUrl}${endpoint}`, {
+  
+    const response = await fetch(`${this.mcpBackendUrl}/process-text`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-
+  
     if (response.ok) {
       const result = await response.json();
-      console.log('✅ Successfully processed by MCP backend');
-      // console.log(`📨 Result: ${result.message || result.response}`);
+      console.log('✅ Text processed by Python backend');
+      console.log(`📨 Result:`, result);
     } else {
-      console.error(`❌ MCP backend error: ${response.status}`);
+      console.error(`❌ Python backend error: ${response.status}`);
     }
-
-  } catch (error) {
-    console.error('❌ Failed to send to MCP backend:', error);
   }
-}
+  
+  private async sendMultimodalRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+    // For multimodal requests, we need to send FormData
+    const formData = new FormData();
+    formData.append('query', queryData.textQuery || '');
+    formData.append('user_id', queryData.userId || '');
+    
+    // Add file if exists (you'll need to handle file reading based on your setup)
+    if (queryData.files && queryData.files.length > 0) {
+      const file = queryData.files[0]; // Process first file for now
+      // You'll need to read the file and append it
+      // formData.append('file', fileBlob, file.filename);
+      console.log(`📁 Processing file: ${file.filename} (${file.mimetype})`);
+    }
+  
+    const response = await fetch(`${this.mcpBackendUrl}/process-multimodal`, {
+      method: 'POST',
+      body: formData // Note: no Content-Type header for FormData
+    });
+  
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Multimodal content processed by Python backend');
+      console.log(`📨 Result:`, result);
+    } else {
+      console.error(`❌ Python backend error: ${response.status}`);
+    }
+  }
+  private async sendImageRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+    const formData = new FormData();
+    formData.append('query', queryData.textQuery || '');
+  
+    // Append user_id if exists
+    if (queryData.userId) {
+      formData.append('user_id', queryData.userId);
+    }
+  
+    if (queryData.files && queryData.files.length > 0) {
+      const file = queryData.files[0]; // Handle first file
+        
+      // You need to convert the file to a Blob/File depending on your environment.
+      // Assuming file.content is a Buffer or readable stream.
+      // Here is an example using fetch's File and Blob (works in browser or with node-fetch and File API):
+  
+      // If running in Node.js, you'll need to read the file from disk or buffer and create Blob/File accordingly.
+      // Example below assumes file has a path accessible via fs or a buffer in file.content.
+      const fs = require('fs');
+      const path = require('path');
+  
+      // Read file into Buffer and create Blob/File for FormData
+      const fileBuffer = fs.readFileSync(file.path); // or handle accordingly
+  
+      const blob = new Blob([fileBuffer], { type: file.mimetype });
+      // FormData append: key, Blob, filename
+      formData.append('file', blob, file.filename);
+  
+      console.log(`📁 Processing image file: ${file.filename} (${file.mimetype})`);
+    }
+  
+    const response = await fetch(`${this.mcpBackendUrl}/process-image`, {
+      method: 'POST',
+      body: formData
+    });
+  
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Image processed by Python backend');
+      console.log(`📨 Result:`, result);
+    } else {
+      console.error(`❌ Python backend error: ${response.status}`);
+    }
+  }
 
-  /**
-   * Send files to MCP backend for processing
-   */
-  private async sendFilesToMCP(agentType: string, queryData: QueryData): Promise<void> {
+  private async sendClassificationToMCP(
+    classification: QueryClassification, 
+    queryData: QueryData, 
+    routing: RoutingDecision | null
+  ): Promise<void> {
     try {
-      console.log('📁 Sending files to MCP backend for processing...');
-      
-      // For now, just send file metadata
-      // Later we can send actual file data if needed
-      const filePayload = {
-        agentType: agentType,
-        userId: queryData.userId,
-        queryText: queryData.textQuery || '',
-        files: queryData.files?.map(file => ({
-          filename: file.filename,
-          mimetype: file.mimetype,
-          size: file.size,
-          path: file.path
-        })) || [],
-        timestamp: new Date().toISOString()
-      };
-
-      const response = await fetch(`${this.mcpBackendUrl}/process-files-metadata`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(filePayload)
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        console.log('✅ File metadata sent to MCP backend successfully');
+      console.log('📡 Sending to Python MCP backend...');
+  
+      // Only file-based queries go to specialist endpoints
+      if (queryData.files && queryData.files.length > 0) {
+        switch (classification.agentType) {
+          case 'image':
+            await this.sendImageRequest(queryData, classification);
+            return;
+          case 'video':
+            await this.sendVideoRequest(queryData, classification);
+            return;
+          case 'audio':
+            await this.sendAudioRequest(queryData, classification);
+            return;
+          case 'document':
+          default:
+            await this.sendDocumentRequest(queryData, classification);
+            return;
+        }
       } else {
-        console.error(`❌ Failed to send files to MCP: ${response.status}`);
+        // Pure text queries
+        await this.sendTextRequest(queryData, classification);
+        return;
       }
-
+  
     } catch (error) {
-      console.error('❌ Error sending files to MCP:', error);
+      console.error('❌ Failed to send to Python backend:', error);
     }
   }
-
-  /**
-   * Health check for classification service
-   */
+  
+  private async sendAudioRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+    const formData = new FormData();
+    formData.append('query', queryData.textQuery || '');
+    if (queryData.userId) {
+      formData.append('user_id', queryData.userId);
+    }
+    if (queryData.files && queryData.files.length > 0) {
+      const file = queryData.files[0];
+      const fs = require('fs');
+      const fileBuffer = fs.readFileSync(file.path);
+      const blob = new Blob([fileBuffer], { type: file.mimetype });
+      formData.append('file', blob, file.filename);
+      console.log(`📁 Processing audio file: ${file.filename} (${file.mimetype})`);
+    }
+    const response = await fetch(`${this.mcpBackendUrl}/process-audio`, {
+      method: 'POST',
+      body: formData
+    });
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Audio processed by Python backend');
+      console.log(`📨 Result:`, result);
+    } else {
+      console.error(`❌ Python backend error: ${response.status}`);
+    }
+  }
+  
+  private async sendVideoRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+    const formData = new FormData();
+    formData.append('query', queryData.textQuery || '');
+    if (queryData.userId) {
+      formData.append('user_id', queryData.userId);
+    }
+    if (queryData.files && queryData.files.length > 0) {
+      const file = queryData.files[0];
+      const fs = require('fs');
+      const fileBuffer = fs.readFileSync(file.path);
+      const blob = new Blob([fileBuffer], { type: file.mimetype });
+      formData.append('file', blob, file.filename);
+      console.log(`📁 Processing video file: ${file.filename} (${file.mimetype})`);
+    }
+    const response = await fetch(`${this.mcpBackendUrl}/process-video`, {
+      method: 'POST',
+      body: formData
+    });
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Video processed by Python backend');
+      console.log(`📨 Result:`, result);
+    } else {
+      console.error(`❌ Python backend error: ${response.status}`);
+    }
+  }
+  
+  private async sendDocumentRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+    const formData = new FormData();
+    formData.append('query', queryData.textQuery || '');
+    if (queryData.userId) {
+      formData.append('user_id', queryData.userId);
+    }
+    if (queryData.files && queryData.files.length > 0) {
+      const file = queryData.files[0];
+      const fs = require('fs');
+      const fileBuffer = fs.readFileSync(file.path);
+      const blob = new Blob([fileBuffer], { type: file.mimetype });
+      formData.append('file', blob, file.filename);
+      console.log(`📁 Processing document file: ${file.filename} (${file.mimetype})`);
+    }
+    const response = await fetch(`${this.mcpBackendUrl}/process-document`, {
+      method: 'POST',
+      body: formData
+    });
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Document processed by Python backend');
+      console.log(`📨 Result:`, result);
+    } else {
+      console.error(`❌ Python backend error: ${response.status}`);
+    }
+  }
+  
   async healthCheck(): Promise<{
     status: 'healthy' | 'unhealthy';
     service: string;

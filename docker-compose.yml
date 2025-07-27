@@ -1,0 +1,62 @@
+version: "3.8"
+
+services:
+  mcp-audio:
+    image: pixeltable/mcp:latest
+    command: serve --service audio --port 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./mcp-audio-data:/data
+    environment:
+      - SOME_ENV_VAR=value
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-video:
+    image: pixeltable/mcp:latest
+    command: serve --service video --port 8081
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./mcp-video-data:/data
+    environment:
+      - SOME_ENV_VAR=value
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-image:
+    image: pixeltable/mcp:latest
+    command: serve --service image --port 8082
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./mcp-image-data:/data
+    environment:
+      - SOME_ENV_VAR=value
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-docs:
+    image: pixeltable/mcp:latest
+    command: serve --service docs --port 8083
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./mcp-docs-data:/data
+    environment:
+      - SOME_ENV_VAR=value
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
