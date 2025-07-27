@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { signIn, getSession } from "next-auth/react"
 import { useRouter, useSearchParams } from "next/navigation"
+import { useAuth } from "@/hooks/useAuth" // Adjust path as needed
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -16,39 +17,36 @@ export default function LoginPage() {
   const [firstName, setFirstName] = useState("")
   const [lastName, setLastName] = useState("")
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [selectedRole, setSelectedRole] = useState<'user' | 'admin'>('user')
   
   const router = useRouter()
   const searchParams = useSearchParams()
-  const callbackUrl = searchParams.get('callbackUrl') || '/dashboard'
+  const callbackUrl = searchParams.get('callbackUrl')
+  
+// Add this debugging to your login page after the useAuth hook:
 
-  useEffect(() => {
-    const checkSession = async () => {
-      const session = await getSession()
-      if (session) {
-        const userId = (session as any)?.userId
-        if (userId && !searchParams.get('force')) {
-          // Only auto-redirect if not forced to login page
-          router.push(`/dashboard/${userId}`)
-        }
-      }
+const { isAuthenticated, isAdmin, userId, userRole, isLoading, session, userInfo } = useAuth(false)
+
+// Also add debugging in your redirect logic:
+useEffect(() => {
+  if (isAuthenticated && userId && !searchParams.get('force') && !isLoading) {
+    if (isAdmin) {
+      router.push(`/admin/dashboard/${userId}`)
+    } else {
+      router.push(`/dashboard/${userId}`)
     }
-    checkSession()
-  }, [router, searchParams])
-
-  // Handle theme toggle
+  }
+}, [isAuthenticated, isAdmin, userId, router, searchParams, isLoading])
   useEffect(() => {
-    const savedTheme = localStorage.getItem('theme')
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    setIsDark(savedTheme === 'dark' || (!savedTheme && prefersDark))
+    setIsDark(prefersDark)
   }, [])
 
   useEffect(() => {
     if (isDark) {
       document.documentElement.classList.add('dark')
-      localStorage.setItem('theme', 'dark')
     } else {
       document.documentElement.classList.remove('dark')
-      localStorage.setItem('theme', 'light')
     }
   }, [isDark])
 
@@ -89,6 +87,7 @@ export default function LoginPage() {
             password,
             firstName,
             lastName,
+            role: selectedRole, // Include selected role
           }),
         })
 
@@ -105,15 +104,28 @@ export default function LoginPage() {
           if (result?.error) {
             setError("Registration successful but login failed. Please try logging in.")
           } else {
-            // Get user ID from registration response and redirect to user dashboard
-            const userId = data.data.user.id
-            router.push(`/dashboard/${userId}`)
+            // Get fresh session data and redirect using the auth hook data
+            const newSession = await getSession()
+            const newUserId = (newSession as any)?.userId
+            const newUserRole = (newSession as any)?.role
+            
+            if (newUserRole === 'admin') {
+              router.push(`/admin/dashboard/${newUserId}`)
+            } else {
+              router.push(`/dashboard/${newUserId}`)
+            }
           }
         } else {
-          setError(data.error || "Registration failed")
+          // Handle specific error messages from backend
+          if (data.errors && Array.isArray(data.errors)) {
+            setError(data.errors.map((err: any) => err.msg).join(', '))
+          } else {
+            setError(data.error || "Registration failed")
+          }
         }
       } catch (error) {
         setError("An error occurred during registration")
+        console.error('Registration error:', error)
       }
     } else {
       // Sign In Logic
@@ -133,17 +145,22 @@ export default function LoginPage() {
         if (result?.error) {
           setError("Invalid credentials")
         } else {
-          // After successful login, get user session and redirect to user dashboard
-          const session = await getSession()
-          const userId = (session as any)?.userId
-          if (userId) {
-            router.push(`/dashboard/${userId}`)
+          // Get fresh session data and redirect using role information
+          const newSession = await getSession()
+          const newUserId = (newSession as any)?.userId
+          const newUserRole = (newSession as any)?.role
+          
+          if (newUserRole === 'admin') {
+            router.push(`/admin/dashboard/${newUserId}`)
+          } else if (newUserId) {
+            router.push(`/dashboard/${newUserId}`)
           } else {
             router.push("/dashboard") // Fallback
           }
         }
       } catch (error) {
         setError("An error occurred during login")
+        console.error('Login error:', error)
       }
     }
     
@@ -157,6 +174,7 @@ export default function LoginPage() {
     setFirstName("")
     setLastName("")
     setError("")
+    setSelectedRole('user')
   }
 
   const toggleMode = () => {
@@ -164,6 +182,23 @@ export default function LoginPage() {
     resetForm()
   }
 
+  // Don't render the login form if user is already authenticated and being redirected
+  if (isAuthenticated && !searchParams.get('force')) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center ${
+        isDark 
+          ? 'bg-gradient-to-br from-gray-900 to-gray-800' 
+          : 'bg-gradient-to-br from-gray-50 to-gray-100'
+      }`}>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 dark:border-white mx-auto mb-4"></div>
+          <p className={isDark ? 'text-white' : 'text-gray-900'}>
+            Redirecting to your dashboard...
+          </p>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className={`min-h-screen transition-colors duration-200 ${
       isDark 
@@ -172,13 +207,13 @@ export default function LoginPage() {
     } flex items-center justify-center p-4`}>
       
       {/* Access Denied Notice */}
-      {searchParams.get('callbackUrl') && (
+      {callbackUrl && (
         <div className={`absolute top-4 left-1/2 transform -translate-x-1/2 p-4 rounded-lg border ${
           isDark 
             ? 'bg-blue-900/20 border-blue-700 text-blue-300' 
             : 'bg-blue-50 border-blue-200 text-blue-700'
         }`}>
-          <p className="text-sm">Please log in to access the dashboard</p>
+          <p className="text-sm">Please log in to access the requested page</p>
         </div>
       )}
       
@@ -241,6 +276,74 @@ export default function LoginPage() {
             {error && (
               <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
                 <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+              </div>
+            )}
+
+            {/* Role Selection (Sign Up Only) */}
+            {isSignUp && (
+              <div className="space-y-2">
+                <label className={`block text-sm font-medium ${
+                  isDark ? 'text-gray-300' : 'text-gray-700'
+                }`}>
+                  Account Type
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRole('user')}
+                    className={`p-3 rounded-lg border text-sm font-medium transition-colors ${
+                      selectedRole === 'user'
+                        ? isDark
+                          ? 'bg-blue-900/30 border-blue-600 text-blue-300'
+                          : 'bg-blue-50 border-blue-500 text-blue-700'
+                        : isDark
+                          ? 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600'
+                          : 'bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    <div className="text-center">
+                      <div className="font-semibold">User</div>
+                      <div className={`text-xs mt-1 ${
+                        selectedRole === 'user' 
+                          ? isDark ? 'text-blue-400' : 'text-blue-600'
+                          : isDark ? 'text-gray-400' : 'text-gray-500'
+                      }`}>
+                        Standard access
+                      </div>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRole('admin')}
+                    className={`p-3 rounded-lg border text-sm font-medium transition-colors ${
+                      selectedRole === 'admin'
+                        ? isDark
+                          ? 'bg-purple-900/30 border-purple-600 text-purple-300'
+                          : 'bg-purple-50 border-purple-500 text-purple-700'
+                        : isDark
+                          ? 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600'
+                          : 'bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    <div className="text-center">
+                      <div className="font-semibold">Admin</div>
+                      <div className={`text-xs mt-1 ${
+                        selectedRole === 'admin' 
+                          ? isDark ? 'text-purple-400' : 'text-purple-600'
+                          : isDark ? 'text-gray-400' : 'text-gray-500'
+                      }`}>
+                        Full access
+                      </div>
+                    </div>
+                  </button>
+                </div>
+                {selectedRole === 'admin' && (
+                  <div className={`text-xs p-2 rounded ${
+                    isDark ? 'bg-amber-900/20 text-amber-400' : 'bg-amber-50 text-amber-700'
+                  }`}>
+                    ⚠️ Admin accounts require approval and have system-wide permissions
+                  </div>
+                )}
               </div>
             )}
 

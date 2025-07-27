@@ -158,7 +158,8 @@ class ImageAgent:
             if not base64_image:
                 return {
                     "success": False,
-                    "error": "Failed to encode image to base64"
+                    "error": "Failed to encode image to base64",
+                    "tokens_used": 0
                 }
             
             # Get MIME type
@@ -205,12 +206,13 @@ class ImageAgent:
             )
             
             analysis = response.choices[0].message.content
+            tokens_used = response.usage.total_tokens if response.usage else 0
             
             return {
                 "success": True,
                 "analysis": analysis,
                 "model_used": "gpt-4o",
-                "tokens_used": response.usage.total_tokens if response.usage else 0,
+                "tokens_used": tokens_used,
                 "image_info": {
                     "filename": os.path.basename(image_path),
                     "mime_type": mime_type,
@@ -222,7 +224,8 @@ class ImageAgent:
             print(f"❌ OpenAI Vision API error: {str(e)}")
             return {
                 "success": False,
-                "error": f"OpenAI Vision API error: {str(e)}"
+                "error": f"OpenAI Vision API error: {str(e)}",
+                "tokens_used": 0
             }
 
     def create_analysis_agent(self) -> Agent:
@@ -315,9 +318,13 @@ class ImageAgent:
             print("🚀 Executing CrewAI enhancement workflow...")
             result = crew.kickoff()
             
+            # Get crew tokens
+            crew_tokens = getattr(crew.usage_metrics, 'total_tokens', 0) if hasattr(crew, 'usage_metrics') else 0
+            
             return {
                 "success": True,
                 "enhanced_analysis": str(result),
+                "tokens_used": crew_tokens,
                 "agents_used": ["analysis_expert", "response_formatter"]
             }
             
@@ -325,7 +332,8 @@ class ImageAgent:
             print(f"❌ CrewAI enhancement error: {str(e)}")
             return {
                 "success": False,
-                "error": f"CrewAI enhancement error: {str(e)}"
+                "error": f"CrewAI enhancement error: {str(e)}",
+                "tokens_used": 0
             }
 
     def store_to_pixeltable(self, image_path: str, query: str, result: Dict[str, Any], user_id: str, processing_time: float, success: bool) -> bool:
@@ -336,21 +344,22 @@ class ImageAgent:
             
         try:
             print("💾 Storing results to Pixeltable database...")
+            tokens_used = result.get('tokens', 0)  # Get tokens from top level
             
             if success and 'result' in result:
                 # Extract image and technical information
-                image_info = result['result'].get('image_info', {})
-                technical_details = result['result'].get('technical_details', {})
+                result_data = result['result']
+                technical_details = result_data.get('technical_details', {})
                 
                 # Get detailed image info
                 detailed_info = self.get_image_info(image_path)
                 
                 # Prepare CrewAI result
                 crewai_result = {
-                    "primary_analysis": result['result'].get('primary_analysis', ''),
-                    "enhanced_response": result['result'].get('enhanced_response', ''),
-                    "query_details": result['result'].get('query_details', {}),
-                    "status": result['result'].get('status', {}),
+                    "primary_analysis": result_data.get('primary_analysis', result_data.get('analysis', '')),
+                    "enhanced_response": result_data.get('enhanced_response', ''),
+                    "query_details": result_data.get('query_details', {}),
+                    "status": result_data.get('status', {}),
                     "processing_method": result.get('processing_method', 'unknown')
                 }
                 
@@ -373,10 +382,10 @@ class ImageAgent:
                 # Insert image record
                 image_success = insert_image_record(
                     user_id=user_id,
-                    image_path=image_path,  # Use the data folder path
+                    image_path=image_path,
                     query=query,
                     crewai_result=crewai_result,
-                    tokens_used=int(technical_details.get('tokens_used', 0)),
+                    tokens_used=int(tokens_used),
                     context=f"Image analysis - {result.get('processing_method', 'full_processing')}",
                     metadata=metadata
                 )
@@ -388,7 +397,7 @@ class ImageAgent:
                     table_name='demo.images',
                     record_id=f"img_{int(time.time())}",
                     query=query,
-                    tokens_used=int(technical_details.get('tokens_used', 0)),
+                    tokens_used=int(tokens_used),
                     processing_time=processing_time,
                     success=True,
                     error_message=None
@@ -419,6 +428,125 @@ class ImageAgent:
         except Exception as e:
             print(f"❌ Database storage error: {str(e)}")
             return False
+
+    def quick_analyze(self, image_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
+        """
+        Quick analysis using only OpenAI Vision (faster processing) with database storage.
+        
+        Args:
+            image_path: Path to the image file (will be saved to data folder)
+            query: User's query about the image
+            user_id: User identifier for database storage
+            
+        Returns:
+            Dictionary containing the analysis results
+        """
+        start_time = time.time()
+        original_path = image_path
+        
+        try:
+            print(f"⚡ Starting quick image analysis...")
+            print(f"👤 User: {user_id}")
+            
+            # Step 1: Save image to data folder
+            saved_image_path = self.save_image_to_data_folder(image_path, user_id)
+            
+            # Step 2: Analyze with OpenAI Vision only
+            openai_result = self.analyze_image_with_openai(saved_image_path, query)
+            processing_time = time.time() - start_time
+            
+            if not openai_result.get("success"):
+                error_result = {
+                    'success': False,
+                    'tokens': 0,  # No tokens on error
+                    'result': {
+                        'error': openai_result.get("error", "Failed to analyze image"),
+                        'processing_time': processing_time
+                    },
+                    'query': query,
+                    'file_processed': True,
+                    'error': openai_result.get("error")
+                }
+                
+                # Store failed attempt to database
+                self.store_to_pixeltable(saved_image_path, query, error_result, user_id, processing_time, False)
+                
+                # Clean up temp file if different from saved path
+                if original_path != saved_image_path:
+                    self.cleanup_temp_file(original_path)
+                
+                return error_result
+            
+            total_tokens = openai_result.get("tokens_used", 0)
+            
+            result_data = {
+                "analysis": openai_result.get("analysis", ""),
+                "technical_details": {
+                    "model_used": openai_result.get("model_used", "gpt-4o"),
+                    "tokens_used": total_tokens,
+                    "processing_time": f"{processing_time:.2f}s"
+                },
+                "image_info": openai_result.get("image_info", {}),
+                "file_paths": {
+                    "original_path": original_path,
+                    "data_folder_path": saved_image_path,
+                    "saved_to_data_folder": True
+                },
+                "processing_mode": "quick_analysis"
+            }
+            
+            success_result = {
+                'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
+                'result': result_data,
+                'query': query,
+                'file_processed': True,
+                'processing_method': 'openai_vision_only',
+                'processing_time': processing_time
+            }
+            
+            # Step 3: Store results to database (using data folder path)
+            db_success = self.store_to_pixeltable(saved_image_path, query, success_result, user_id, processing_time, True)
+            
+            # Step 4: Clean up temp file if different from saved path
+            if original_path != saved_image_path:
+                self.cleanup_temp_file(original_path)
+            
+            print(f"📊 Total tokens used: {total_tokens}")
+            if db_success:
+                print(f"⚡ Quick analysis completed and stored in {processing_time:.2f}s")
+            else:
+                print(f"⚠️ Quick analysis completed but database storage failed in {processing_time:.2f}s")
+            
+            return success_result
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            print(f"❌ Quick analysis failed: {str(e)}")
+            
+            error_result = {
+                'success': False,
+                'tokens': 0,  # No tokens on error
+                'result': {
+                    'error': f'Quick analysis error: {str(e)}',
+                    'processing_time': processing_time
+                },
+                'query': query,
+                'file_processed': True,
+                'error': str(e),
+                'processing_time': processing_time
+            }
+            
+            # Try to store failed attempt and clean up
+            try:
+                saved_path = self.save_image_to_data_folder(original_path, user_id)
+                self.store_to_pixeltable(saved_path, query, error_result, user_id, processing_time, False)
+                if original_path != saved_path:
+                    self.cleanup_temp_file(original_path)
+            except:
+                pass
+            
+            return error_result
 
     def process_image(self, image_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
         """
@@ -451,6 +579,7 @@ class ImageAgent:
                 processing_time = time.time() - start_time
                 error_result = {
                     'success': False,
+                    'tokens': 0,  # No tokens on error
                     'result': {
                         'error': openai_result.get("error", "Failed to analyze image"),
                         'agent_used': 'openai_vision',
@@ -473,15 +602,22 @@ class ImageAgent:
             # Step 3: Enhance with CrewAI (optional, can be disabled for faster processing)
             crew_result = self.enhance_analysis_with_crew(openai_result, query, saved_image_path)
             
-            # Step 4: Combine results
+            # Step 4: Calculate total tokens
             processing_time = time.time() - start_time
+            openai_tokens = openai_result.get("tokens_used", 0)
+            crew_tokens = crew_result.get("tokens_used", 0) if crew_result.get("success") else 0
+            total_tokens = openai_tokens + crew_tokens
             
             final_result = {
                 "primary_analysis": openai_result.get("analysis", ""),
                 "enhanced_response": crew_result.get("enhanced_analysis", "") if crew_result.get("success") else "",
                 "technical_details": {
                     "model_used": openai_result.get("model_used", "gpt-4o"),
-                    "tokens_used": openai_result.get("tokens_used", 0),
+                    "tokens_used": total_tokens,
+                    "token_breakdown": {
+                        "openai_vision": openai_tokens,
+                        "crew_enhancement": crew_tokens
+                    },
                     "processing_time": f"{processing_time:.2f}s",
                     "enhancement_agents": crew_result.get("agents_used", [])
                 },
@@ -504,6 +640,7 @@ class ImageAgent:
             
             success_result = {
                 'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
                 'result': final_result,
                 'query': query,
                 'file_processed': True,
@@ -518,6 +655,7 @@ class ImageAgent:
             if original_path != saved_image_path:
                 self.cleanup_temp_file(original_path)
             
+            print(f"📊 Total tokens used: {total_tokens}")
             if db_success:
                 print(f"✅ Image processing completed and stored in {processing_time:.2f}s")
             else:
@@ -531,124 +669,12 @@ class ImageAgent:
             
             error_result = {
                 'success': False,
+                'tokens': 0,  # No tokens on error
                 'result': {
                     'error': f'Image processing error: {str(e)}',
                     'processing_time': processing_time,
                     'query': query,
                     'agent_used': 'image_agent'
-                },
-                'query': query,
-                'file_processed': True,
-                'error': str(e),
-                'processing_time': processing_time
-            }
-            
-            # Try to store failed attempt and clean up
-            try:
-                saved_path = self.save_image_to_data_folder(original_path, user_id)
-                self.store_to_pixeltable(saved_path, query, error_result, user_id, processing_time, False)
-                if original_path != saved_path:
-                    self.cleanup_temp_file(original_path)
-            except:
-                pass
-            
-            return error_result
-
-    def quick_analyze(self, image_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
-        """
-        Quick analysis using only OpenAI Vision (faster processing) with database storage.
-        
-        Args:
-            image_path: Path to the image file (will be saved to data folder)
-            query: User's query about the image
-            user_id: User identifier for database storage
-            
-        Returns:
-            Dictionary containing the analysis results
-        """
-        start_time = time.time()
-        original_path = image_path
-        
-        try:
-            print(f"⚡ Starting quick image analysis...")
-            print(f"👤 User: {user_id}")
-            
-            # Step 1: Save image to data folder
-            saved_image_path = self.save_image_to_data_folder(image_path, user_id)
-            
-            # Step 2: Analyze with OpenAI Vision only
-            openai_result = self.analyze_image_with_openai(saved_image_path, query)
-            processing_time = time.time() - start_time
-            
-            if not openai_result.get("success"):
-                error_result = {
-                    'success': False,
-                    'result': {
-                        'error': openai_result.get("error", "Failed to analyze image"),
-                        'processing_time': processing_time
-                    },
-                    'query': query,
-                    'file_processed': True,
-                    'error': openai_result.get("error")
-                }
-                
-                # Store failed attempt to database
-                self.store_to_pixeltable(saved_image_path, query, error_result, user_id, processing_time, False)
-                
-                # Clean up temp file if different from saved path
-                if original_path != saved_image_path:
-                    self.cleanup_temp_file(original_path)
-                
-                return error_result
-            
-            result_data = {
-                "analysis": openai_result.get("analysis", ""),
-                "technical_details": {
-                    "model_used": openai_result.get("model_used", "gpt-4o"),
-                    "tokens_used": openai_result.get("tokens_used", 0),
-                    "processing_time": f"{processing_time:.2f}s"
-                },
-                "image_info": openai_result.get("image_info", {}),
-                "file_paths": {
-                    "original_path": original_path,
-                    "data_folder_path": saved_image_path,
-                    "saved_to_data_folder": True
-                },
-                "processing_mode": "quick_analysis"
-            }
-            
-            success_result = {
-                'success': True,
-                'result': result_data,
-                'query': query,
-                'file_processed': True,
-                'processing_method': 'openai_vision_only',
-                'processing_time': processing_time
-            }
-            
-            # Step 3: Store results to database (using data folder path)
-            db_success = self.store_to_pixeltable(saved_image_path, query, success_result, user_id, processing_time, True)
-            
-            # Step 4: Clean up temp file if different from saved path
-            if original_path != saved_image_path:
-                self.cleanup_temp_file(original_path)
-            
-            if db_success:
-                print(f"⚡ Quick analysis completed and stored in {processing_time:.2f}s")
-            else:
-                print(f"⚠️ Quick analysis completed but database storage failed in {processing_time:.2f}s")
-            
-            return success_result
-            
-        except Exception as e:
-            processing_time = time.time() - start_time
-            print(f"❌ Quick analysis failed: {str(e)}")
-            
-            error_result = {
-                'success': False,
-                'result': {
-                    'error': f'Quick analysis error: {str(e)}',
-                    'processing_time': processing_time
                 },
                 'query': query,
                 'file_processed': True,
@@ -702,13 +728,21 @@ if __name__ == "__main__":
     # Initialize agent
     agent = ImageAgent()
     
-    # Example with full processing and database storage
-    result = agent.process_image(
-        image_path="/path/to/temp/image.jpg",  # This will be saved to data folder
+    # Example with quick processing
+    quick_result = agent.quick_analyze(
+        image_path="/path/to/temp/image.jpg",
         query="What objects are visible in this image?",
         user_id="user123"
     )
-    print("Full Processing Result:", result['success'])
+    print(f"🔢 Tokens used in quick analysis: {quick_result.get('tokens', 0)}")
+    
+    # Example with full processing and database storage
+    full_result = agent.process_image(
+        image_path="/path/to/temp/image.jpg",
+        query="What objects are visible in this image?",
+        user_id="user123"
+    )
+    print(f"🔢 Tokens used in full analysis: {full_result.get('tokens', 0)}")
     
     # Check token usage summary if Pixeltable is available
     if PIXELTABLE_AVAILABLE:

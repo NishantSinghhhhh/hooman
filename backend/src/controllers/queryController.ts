@@ -63,13 +63,6 @@ class QueryController {
 
   public submitQuery = async (req: Request, res: Response): Promise<void> => {
     try {
-      console.log("-----------------------------------------");
-      console.log("📡 INCOMING QUERY REQUEST RECEIVED 📡");
-      console.log("-----------------------------------------");
-      console.log("Request Body (req.body):", req.body);
-      console.log("Uploaded Files (req.files):", req.files);
-      console.log("Authenticated User (req.user):", req.user);
-      console.log("-----------------------------------------");
 
       const { textQuery, userId } = req.body;
       const files = req.files as Express.Multer.File[];
@@ -154,8 +147,6 @@ class QueryController {
     
     try {
       console.log(`🔄 Processing query ${queryId}...`);
-
-      // Use AgentOrchestrator to classify and route the query
       const classification = await this.orchestrator.processQuery(queryData);
 
       const processingTime = Date.now() - startTime;

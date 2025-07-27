@@ -172,14 +172,16 @@ class DocumentAgent:
                 temperature=0.2,
             )
             analysis = response.choices[0].message.content
+            tokens_used = response.usage.total_tokens if response.usage else 0
+            
             return {
                 "success": True,
                 "analysis": analysis,
                 "model_used": "gpt-4o",
-                "tokens_used": response.usage.total_tokens if response.usage else 0,
+                "tokens_used": tokens_used,
             }
         except Exception as e:
-            return {"success": False, "error": f"OpenAI API error: {str(e)}"}
+            return {"success": False, "error": f"OpenAI API error: {str(e)}", "tokens_used": 0}
 
     def create_document_analysis_agent(self) -> Agent:
         """Creates a specialized document analysis agent."""
@@ -210,12 +212,11 @@ class DocumentAgent:
         try:
             print("💾 Storing document results to Pixeltable database...")
             doc_info = self.get_document_info(doc_path)
-            res_data = result.get('result', {})
-            tech_details = res_data.get('technical_details', {})
-            tokens_used = tech_details.get('tokens_used', 0)
+            tokens_used = result.get('tokens', 0)  # Get tokens from top level
             
             # Insert document record only on success
             if success:
+                res_data = result.get('result', {})
                 crewai_result = {
                     "primary_analysis": res_data.get('analysis', ''),
                     "enhanced_response": res_data.get('enhanced_response', ''),
@@ -252,6 +253,68 @@ class DocumentAgent:
             print(f"❌ Database storage error: {str(e)}")
             return False
 
+    def quick_analyze(self, document_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
+        """Quick analysis using OpenAI only (faster, less detailed)."""
+        start_time = time.time()
+        original_path = document_path
+        saved_doc_path = None
+        try:
+            print("⚡ Starting quick document analysis...")
+            saved_doc_path = self.save_document_to_data_folder(document_path, user_id)
+            
+            extraction_result = self.extract_document_text(saved_doc_path)
+            if not extraction_result.get("success"):
+                raise ValueError(extraction_result.get("error"))
+
+            document_text = extraction_result.get("text", "")
+            
+            # Analyze with OpenAI only
+            openai_result = self.analyze_document_with_openai(document_text, query)
+            if not openai_result.get("success"):
+                raise ValueError(openai_result.get("error"))
+            
+            processing_time = time.time() - start_time
+            total_tokens = openai_result.get('tokens_used', 0)
+            
+            final_result = {
+                'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
+                'result': {
+                    "analysis": openai_result.get("analysis", ""),
+                    "technical_details": {
+                        "tokens_used": total_tokens,
+                        "model_used": openai_result.get("model_used", "gpt-4o"),
+                        "word_count": extraction_result.get("word_count", 0),
+                        "char_count": extraction_result.get("char_count", 0)
+                    },
+                },
+                'query': query,
+                'processing_method': 'text_extraction + openai_only',
+                'processing_time': processing_time,
+            }
+            
+            self.store_to_pixeltable(saved_doc_path, query, final_result, user_id, processing_time, True)
+            print(f"📊 Total tokens used: {total_tokens}")
+            print(f"✅ Quick document analysis completed in {processing_time:.2f}s")
+            return final_result
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            print(f"❌ Quick document analysis failed: {str(e)}")
+            error_result = {
+                'success': False, 
+                'tokens': 0,  # No tokens on error
+                'error': str(e), 
+                'query': query, 
+                'processing_time': processing_time
+            }
+            if saved_doc_path:
+                self.store_to_pixeltable(saved_doc_path, query, error_result, user_id, processing_time, False)
+            return error_result
+        finally:
+            if original_path != saved_doc_path and saved_doc_path:
+                self.cleanup_temp_file(original_path)
+
     def process_document(self, document_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
         """Full, in-depth analysis using text extraction and CrewAI."""
         start_time = time.time()
@@ -267,6 +330,10 @@ class DocumentAgent:
 
             document_text = extraction_result.get("text", "")
             
+            # First get OpenAI analysis for token counting
+            openai_result = self.analyze_document_with_openai(document_text, query)
+            openai_tokens = openai_result.get('tokens_used', 0) if openai_result.get('success') else 0
+            
             # CrewAI setup
             analysis_agent = self.create_document_analysis_agent()
             synthesizer_agent = self.create_content_synthesizer_agent()
@@ -277,34 +344,56 @@ class DocumentAgent:
                 agent=analysis_agent
             )
             synthesis_task = Task(
-                description="Synthesize the analysis from the previous task into a final, user-facing response.", 
+                description="Synthesize the analysis from the previous task into a final, user-friendly response.", 
                 expected_output="A polished, comprehensive answer.", 
                 agent=synthesizer_agent,
-                context=[analysis_task] # Ensure tasks are linked
+                context=[analysis_task]
             )
             
             crew = Crew(agents=[analysis_agent, synthesizer_agent], tasks=[analysis_task, synthesis_task], verbose=2)
             crew_output = crew.kickoff()
             
+            # Get crew tokens
+            crew_tokens = getattr(crew.usage_metrics, 'total_tokens', 0) if hasattr(crew, 'usage_metrics') else 0
+            total_tokens = openai_tokens + crew_tokens
+            
             processing_time = time.time() - start_time
             final_result = {
                 'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
                 'result': {
-                    "enhanced_response": crew_output,
-                    "technical_details": {"tokens_used": crew.usage_metrics.get('total_tokens', 0)},
+                    "analysis": openai_result.get("analysis", "") if openai_result.get('success') else "",
+                    "enhanced_response": str(crew_output),
+                    "technical_details": {
+                        "tokens_used": total_tokens,
+                        "token_breakdown": {
+                            "openai_analysis": openai_tokens,
+                            "crew_enhancement": crew_tokens
+                        },
+                        "word_count": extraction_result.get("word_count", 0),
+                        "char_count": extraction_result.get("char_count", 0)
+                    },
                 },
                 'query': query,
-                'processing_method': 'text_extraction + crewai_analysis',
+                'processing_method': 'text_extraction + openai + crewai_analysis',
                 'processing_time': processing_time,
             }
             
             self.store_to_pixeltable(saved_doc_path, query, final_result, user_id, processing_time, True)
+            print(f"📊 Total tokens used: {total_tokens}")
             print(f"✅ Full document processing completed in {processing_time:.2f}s")
             return final_result
+            
         except Exception as e:
             processing_time = time.time() - start_time
             print(f"❌ Full document processing failed: {str(e)}")
-            error_result = {'success': False, 'error': str(e), 'query': query, 'processing_time': processing_time}
+            error_result = {
+                'success': False, 
+                'tokens': 0,  # No tokens on error
+                'error': str(e), 
+                'query': query, 
+                'processing_time': processing_time
+            }
             if saved_doc_path:
                 self.store_to_pixeltable(saved_doc_path, query, error_result, user_id, processing_time, False)
             return error_result
@@ -325,19 +414,28 @@ if __name__ == "__main__":
         f.write("CrewAI is a framework designed to orchestrate autonomous AI agents, making them work together on complex tasks.\n")
     print(f"\nCreated a dummy test document at: {dummy_doc_path}")
 
-    # --- 2. TEST FULL (CREWAI) ANALYSIS ---
+    # TEST QUICK ANALYSIS
+    print("\n" + "="*20 + " TESTING QUICK ANALYSIS " + "="*20)
+    quick_result = agent.quick_analyze(
+        document_path=dummy_doc_path,
+        query="What is Pixeltable?",
+        user_id="doc_user_quick_789"
+    )
+    print(f"🔢 Tokens used in quick analysis: {quick_result.get('tokens', 0)}")
+
+    # TEST FULL ANALYSIS
     print("\n" + "="*20 + " TESTING FULL ANALYSIS " + "="*20)
     full_result = agent.process_document(
         document_path=dummy_doc_path,
         query="Compare Pixeltable and CrewAI based on the text provided.",
         user_id="doc_user_full_999"
     )
-    print("\nFull Analysis Result Success:", full_result.get('success'))
+    print(f"🔢 Tokens used in full analysis: {full_result.get('tokens', 0)}")
+
     if full_result.get('success'):
         print("Enhanced Response:", full_result.get('result', {}).get('enhanced_response'))
 
-
-    # --- 3. TEST THE QUERY FUNCTIONS ---
+    # TEST THE QUERY FUNCTIONS
     if PIXELTABLE_AVAILABLE:
         print("\n" + "="*20 + " PULLING DATA FROM PIXELTABLE " + "="*20)
 

@@ -144,7 +144,7 @@ class VideoAgent:
         try:
             print(f"🔍 Analyzing {len(frame_paths)} frames with OpenAI Vision...")
             if not frame_paths:
-                return {"success": False, "error": "No frames available for analysis"}
+                return {"success": False, "error": "No frames available for analysis", "tokens_used": 0}
 
             images_content = []
             for frame_path in frame_paths:
@@ -153,7 +153,7 @@ class VideoAgent:
                     images_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}})
 
             if not images_content:
-                return {"success": False, "error": "Could not process any frames for analysis"}
+                return {"success": False, "error": "Could not process any frames for analysis", "tokens_used": 0}
 
             prompt = query or "Provide a comprehensive analysis of these video frames, describing the scene, objects, actions, and overall narrative."
             full_prompt = f"Analyze these frames from a video. User query: '{prompt}'"
@@ -168,13 +168,17 @@ class VideoAgent:
             )
             
             analysis = response.choices[0].message.content
+            tokens_used = response.usage.total_tokens if response.usage else 0
+            
             return {
-                "success": True, "analysis": analysis, "model_used": "gpt-4o",
-                "tokens_used": response.usage.total_tokens if response.usage else 0,
+                "success": True, 
+                "analysis": analysis, 
+                "model_used": "gpt-4o",
+                "tokens_used": tokens_used,
                 "frames_analyzed": len(frame_paths)
             }
         except Exception as e:
-            return {"success": False, "error": f"OpenAI video analysis error: {str(e)}"}
+            return {"success": False, "error": f"OpenAI video analysis error: {str(e)}", "tokens_used": 0}
 
     def create_video_analysis_agent(self) -> Agent:
         """Create a specialized video analysis agent."""
@@ -231,15 +235,18 @@ class VideoAgent:
             crew = Crew(agents=[analysis_agent, synthesizer_agent], tasks=[enhancement_task, synthesis_task], verbose=True)
             result = crew.kickoff()
             
+            # Get crew tokens
+            crew_tokens = getattr(crew.usage_metrics, 'total_tokens', 0) if hasattr(crew, 'usage_metrics') else 0
+            
             return {
                 "success": True,
                 "enhanced_analysis": str(result),
                 "agents_used": ["video_analysis_expert", "content_synthesizer"],
-                "tokens_used": crew.usage_metrics.get('total_tokens', 0)
+                "tokens_used": crew_tokens
             }
         except Exception as e:
             print(f"❌ CrewAI enhancement error: {str(e)}")
-            return {"success": False, "error": f"CrewAI enhancement error: {str(e)}"}
+            return {"success": False, "error": f"CrewAI enhancement error: {str(e)}", "tokens_used": 0}
 
     def store_to_pixeltable(self, video_path: str, query: str, result: Dict[str, Any], user_id: str, processing_time: float, success: bool) -> bool:
         """Stores the video processing results to Pixeltable."""
@@ -248,12 +255,14 @@ class VideoAgent:
         try:
             print("💾 Storing video results to Pixeltable database...")
             video_info = self.get_video_info(video_path)
-            res_data = result.get('result', {})
-            tech_details = res_data.get('technical_details', {})
-            tokens_used = tech_details.get('tokens_used', 0)
+            tokens_used = result.get('tokens', 0)  # Get tokens from top level
 
             if success:
-                crewai_result = {"primary_analysis": res_data.get('analysis', ''), "enhanced_response": res_data.get('enhanced_response', '')}
+                res_data = result.get('result', {})
+                crewai_result = {
+                    "primary_analysis": res_data.get('analysis', res_data.get('primary_analysis', '')), 
+                    "enhanced_response": res_data.get('enhanced_response', '')
+                }
                 insert_video_record(
                     user_id=user_id, video_path=video_path,
                     duration=video_info.get('duration', 0), fps=video_info.get('fps', 0),
@@ -274,53 +283,6 @@ class VideoAgent:
             print(f"❌ Database storage error: {str(e)}")
             return False
 
-    def process_video(self, video_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
-        """Main method to process a video file with query and store results in database."""
-        start_time = time.time()
-        original_path = video_path
-        saved_video_path = None
-        frame_paths = []
-        try:
-            print(f"🎬 Starting full video processing...")
-            print(f"👤 User: {user_id}")
-            
-            saved_video_path = self.save_video_to_data_folder(video_path, user_id)
-            video_info = self.get_video_info(saved_video_path)
-            frame_paths = self.extract_frames(saved_video_path, num_frames=6)
-            if not frame_paths: raise ValueError("Frame extraction failed")
-
-            openai_result = self.analyze_frames_with_openai(frame_paths, query, video_info)
-            if not openai_result.get("success"): raise ValueError(openai_result.get("error"))
-
-            crew_result = self.enhance_analysis_with_crew(openai_result, query, saved_video_path)
-            
-            processing_time = time.time() - start_time
-            total_tokens = openai_result.get('tokens_used', 0) + crew_result.get('tokens_used', 0)
-
-            final_result = {
-                'success': True,
-                'result': {
-                    "primary_analysis": openai_result.get("analysis", ""),
-                    "enhanced_response": crew_result.get("enhanced_analysis", "") if crew_result.get("success") else "",
-                    "technical_details": {"tokens_used": total_tokens},
-                },
-                'query': query,
-                'processing_method': 'frame_extraction + openai_vision + crewai_enhancement',
-                'processing_time': processing_time
-            }
-            self.store_to_pixeltable(saved_video_path, query, final_result, user_id, processing_time, True)
-            print(f"✅ Video processing completed in {processing_time:.2f}s")
-            return final_result
-            
-        except Exception as e:
-            processing_time = time.time() - start_time
-            error_result = {'success': False, 'error': str(e), 'query': query, 'processing_time': processing_time}
-            if saved_video_path: self.store_to_pixeltable(saved_video_path, query, error_result, user_id, processing_time, False)
-            return error_result
-        finally:
-            self.cleanup_frame_dir(frame_paths)
-            if original_path != saved_video_path and saved_video_path: self.cleanup_temp_file(original_path)
-
     def quick_analyze(self, video_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
         """Quick analysis using frame extraction and OpenAI only with database storage."""
         start_time = time.time()
@@ -334,19 +296,26 @@ class VideoAgent:
             saved_video_path = self.save_video_to_data_folder(video_path, user_id)
             video_info = self.get_video_info(saved_video_path)
             frame_paths = self.extract_frames(saved_video_path, num_frames=3)
-            if not frame_paths: raise ValueError("Frame extraction failed")
+            if not frame_paths: 
+                raise ValueError("Frame extraction failed")
 
             openai_result = self.analyze_frames_with_openai(frame_paths, query, video_info)
-            if not openai_result.get("success"): raise ValueError(openai_result.get("error"))
+            if not openai_result.get("success"): 
+                raise ValueError(openai_result.get("error"))
 
             processing_time = time.time() - start_time
+            total_tokens = openai_result.get("tokens_used", 0)
+            
             final_result = {
                 'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
                 'result': {
                     "analysis": openai_result.get("analysis", ""),
                     "technical_details": {
                         "model_used": openai_result.get("model_used", "gpt-4o"),
-                        "tokens_used": openai_result.get("tokens_used", 0)
+                        "tokens_used": total_tokens,
+                        "frames_analyzed": openai_result.get("frames_analyzed", 0),
+                        "video_info": video_info
                     }
                 },
                 'query': query,
@@ -355,17 +324,99 @@ class VideoAgent:
             }
             
             self.store_to_pixeltable(saved_video_path, query, final_result, user_id, processing_time, True)
+            print(f"📊 Total tokens used: {total_tokens}")
             print(f"⚡ Quick video analysis completed in {processing_time:.2f}s")
             return final_result
             
         except Exception as e:
             processing_time = time.time() - start_time
-            error_result = {'success': False, 'error': str(e), 'query': query, 'processing_time': processing_time}
-            if saved_video_path: self.store_to_pixeltable(saved_video_path, query, error_result, user_id, processing_time, False)
+            error_result = {
+                'success': False, 
+                'tokens': 0,  # No tokens on error
+                'error': str(e), 
+                'query': query, 
+                'processing_time': processing_time
+            }
+            if saved_video_path: 
+                self.store_to_pixeltable(saved_video_path, query, error_result, user_id, processing_time, False)
             return error_result
         finally:
             self.cleanup_frame_dir(frame_paths)
-            if original_path != saved_video_path and saved_video_path: self.cleanup_temp_file(original_path)
+            if original_path != saved_video_path and saved_video_path: 
+                self.cleanup_temp_file(original_path)
+
+    def process_video(self, video_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
+        """Main method to process a video file with query and store results in database."""
+        start_time = time.time()
+        original_path = video_path
+        saved_video_path = None
+        frame_paths = []
+        try:
+            print(f"🎬 Starting full video processing...")
+            print(f"👤 User: {user_id}")
+            
+            saved_video_path = self.save_video_to_data_folder(video_path, user_id)
+            video_info = self.get_video_info(saved_video_path)
+            frame_paths = self.extract_frames(saved_video_path, num_frames=6)
+            if not frame_paths: 
+                raise ValueError("Frame extraction failed")
+
+            openai_result = self.analyze_frames_with_openai(frame_paths, query, video_info)
+            if not openai_result.get("success"): 
+                raise ValueError(openai_result.get("error"))
+
+            crew_result = self.enhance_analysis_with_crew(openai_result, query, saved_video_path)
+            
+            processing_time = time.time() - start_time
+            
+            # Calculate total tokens from all sources
+            openai_tokens = openai_result.get('tokens_used', 0)
+            crew_tokens = crew_result.get('tokens_used', 0) if crew_result.get('success') else 0
+            total_tokens = openai_tokens + crew_tokens
+
+            final_result = {
+                'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
+                'result': {
+                    "primary_analysis": openai_result.get("analysis", ""),
+                    "enhanced_response": crew_result.get("enhanced_analysis", "") if crew_result.get("success") else "",
+                    "technical_details": {
+                        "tokens_used": total_tokens,
+                        "token_breakdown": {
+                            "openai_vision": openai_tokens,
+                            "crew_enhancement": crew_tokens
+                        },
+                        "model_used": openai_result.get("model_used", "gpt-4o"),
+                        "frames_analyzed": openai_result.get("frames_analyzed", 0),
+                        "video_info": video_info
+                    },
+                },
+                'query': query,
+                'processing_method': 'frame_extraction + openai_vision + crewai_enhancement',
+                'processing_time': processing_time
+            }
+            
+            self.store_to_pixeltable(saved_video_path, query, final_result, user_id, processing_time, True)
+            print(f"📊 Total tokens used: {total_tokens}")
+            print(f"✅ Video processing completed in {processing_time:.2f}s")
+            return final_result
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            error_result = {
+                'success': False, 
+                'tokens': 0,  # No tokens on error
+                'error': str(e), 
+                'query': query, 
+                'processing_time': processing_time
+            }
+            if saved_video_path: 
+                self.store_to_pixeltable(saved_video_path, query, error_result, user_id, processing_time, False)
+            return error_result
+        finally:
+            self.cleanup_frame_dir(frame_paths)
+            if original_path != saved_video_path and saved_video_path: 
+                self.cleanup_temp_file(original_path)
 
 
 if __name__ == "__main__":
@@ -383,18 +434,20 @@ if __name__ == "__main__":
         agent = VideoAgent()
 
         print("\n" + "="*20 + " TESTING QUICK ANALYSIS " + "="*20)
-        agent.quick_analyze(
+        quick_result = agent.quick_analyze(
             video_path=dummy_video_path,
             query="What is this test video showing?",
             user_id="video_user_123"
         )
+        print(f"🔢 Tokens used in quick analysis: {quick_result.get('tokens', 0)}")
         
         print("\n" + "="*20 + " TESTING FULL ANALYSIS " + "="*20)
-        agent.process_video(
+        full_result = agent.process_video(
             video_path=dummy_video_path,
             query="Provide a detailed breakdown of the scenes.",
             user_id="video_user_456"
         )
+        print(f"🔢 Tokens used in full analysis: {full_result.get('tokens', 0)}")
 
         if PIXELTABLE_AVAILABLE:
             print("\n" + "="*20 + " PULLING DATA FROM PIXELTABLE " + "="*20)

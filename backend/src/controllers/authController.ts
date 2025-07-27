@@ -4,16 +4,28 @@ import { body, validationResult } from 'express-validator';
 import User from '@/models/User';
 import { generateToken } from '@/utils/jwt';
 import { 
-  IRegisterRequest, 
-  ILoginRequest, 
-  IAuthResponse, 
-  IUserResponse 
+  RegisterData, 
+  LoginCredentials, 
+  AuthResponse,
+  AuthApiResponse,
+  IUser
 } from '@/types/auth';
 import { IApiResponse } from '@/types/api';
 
+// Define user response interface for API responses
+interface UserResponse {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: 'user' | 'admin';
+  lastLogin?: Date;
+  isActive: boolean;
+}
+
 export const register = async (
-  req: Request<{}, IApiResponse<IAuthResponse>, IRegisterRequest>,
-  res: Response<IApiResponse<IAuthResponse>>
+  req: Request<{}, IApiResponse<AuthApiResponse>, RegisterData>,
+  res: Response<IApiResponse<AuthApiResponse>>
 ): Promise<void> => {
   try {
     const errors = validationResult(req);
@@ -25,7 +37,7 @@ export const register = async (
       return;
     }
 
-    const { email, password, firstName, lastName } = req.body;
+    const { email, password, firstName, lastName, role } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ email });
@@ -42,7 +54,8 @@ export const register = async (
       email,
       password,
       firstName,
-      lastName
+      lastName,
+      role: role || 'user' // Default to 'user' if no role specified
     });
 
     await user.save();
@@ -50,22 +63,22 @@ export const register = async (
     // Generate token
     const token = generateToken(user.id.toString());
 
-    const userResponse: IUserResponse = {
-      id: user.id.toString(),
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      role: user.role
+    const authResponse: AuthApiResponse = {
+      user: {
+        id: user.id.toString(),
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        isActive: user.isActive
+      },
+      token
     };
 
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
-      data: {
-        message: 'User registered successfully',
-        token,
-        user: userResponse
-      }
+      data: authResponse
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -77,8 +90,8 @@ export const register = async (
 };
 
 export const login = async (
-  req: Request<{}, IApiResponse<IAuthResponse>, ILoginRequest>,
-  res: Response<IApiResponse<IAuthResponse>>
+  req: Request<{}, IApiResponse<AuthApiResponse>, LoginCredentials>,
+  res: Response<IApiResponse<AuthApiResponse>>
 ): Promise<void> => {
   try {
     const errors = validationResult(req);
@@ -128,22 +141,23 @@ export const login = async (
     // Generate token
     const token = generateToken(user.id.toString());
 
-    const userResponse: IUserResponse = {
-      id: user.id.toString(),
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      role: user.role,
-      lastLogin: user.lastLogin
+    const authResponse: AuthApiResponse = {
+      user: {
+        id: user.id.toString(),
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        lastLogin: user.lastLogin,
+        isActive: user.isActive
+      },
+      token
     };
 
     res.json({
       success: true,
-      data: {
-        message: 'Login successful',
-        token,
-        user: userResponse
-      }
+      message: 'Login successful',
+      data: authResponse
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -156,16 +170,17 @@ export const login = async (
 
 export const getProfile = async (
   req: Request,
-  res: Response<IApiResponse<IUserResponse>>
+  res: Response<IApiResponse<UserResponse>>
 ): Promise<void> => {
   try {
-    const userResponse: IUserResponse = {
+    const userResponse: UserResponse = {
       id: req.user!._id,
       email: req.user!.email,
       firstName: req.user!.firstName,
       lastName: req.user!.lastName,
       role: req.user!.role,
-      lastLogin: req.user!.lastLogin
+      lastLogin: req.user!.lastLogin,
+      isActive: req.user!.isActive
     };
 
     res.json({
@@ -184,17 +199,18 @@ export const getProfile = async (
 // New endpoint to verify token (useful for NextAuth)
 export const verifyToken = async (
   req: Request,
-  res: Response<IApiResponse<IUserResponse>>
+  res: Response<IApiResponse<UserResponse>>
 ): Promise<void> => {
   try {
     // User is already attached by the authenticateToken middleware
-    const userResponse: IUserResponse = {
+    const userResponse: UserResponse = {
       id: req.user!._id,
       email: req.user!.email,
       firstName: req.user!.firstName,
       lastName: req.user!.lastName,
       role: req.user!.role,
-      lastLogin: req.user!.lastLogin
+      lastLogin: req.user!.lastLogin,
+      isActive: req.user!.isActive
     };
 
     res.json({
@@ -206,6 +222,109 @@ export const verifyToken = async (
     res.status(500).json({ 
       success: false,
       error: 'Server error during token verification' 
+    });
+  }
+};
+
+// Admin-specific endpoints
+export const createAdmin = async (
+  req: Request<{}, IApiResponse<AuthApiResponse>, RegisterData & { adminPermissions?: any }>,
+  res: Response<IApiResponse<AuthApiResponse>>
+): Promise<void> => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({ 
+        success: false,
+        errors: errors.array() 
+      });
+      return;
+    }
+
+    // Check if current user is admin with user management permissions
+    if (!req.user || req.user.role !== 'admin' || !req.user.canManageUsers()) {
+      res.status(403).json({ 
+        success: false,
+        error: 'Insufficient permissions to create admin users' 
+      });
+      return;
+    }
+
+    const { email, password, firstName, lastName, adminPermissions } = req.body;
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      res.status(400).json({ 
+        success: false,
+        error: 'User already exists with this email' 
+      });
+      return;
+    }
+
+    // Create admin user using static method
+    const adminUser = await User.createAdmin({
+      email,
+      password,
+      firstName,
+      lastName,
+      adminPermissions
+    });
+
+    // Generate token
+    const token = generateToken(adminUser.id.toString());
+
+    const authResponse: AuthApiResponse = {
+      user: {
+        id: adminUser.id.toString(),
+        email: adminUser.email,
+        firstName: adminUser.firstName,
+        lastName: adminUser.lastName,
+        role: adminUser.role,
+        isActive: adminUser.isActive
+      },
+      token
+    };
+
+    res.status(201).json({
+      success: true,
+      message: 'Admin user created successfully',
+      data: authResponse
+    });
+  } catch (error) {
+    console.error('Admin creation error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error during admin creation' 
+    });
+  }
+};
+
+export const getUserSummary = async (
+  req: Request,
+  res: Response<IApiResponse<any>>
+): Promise<void> => {
+  try {
+    // Check if current user is admin
+    if (!req.user || req.user.role !== 'admin' || !req.user.canViewSystemAnalytics()) {
+      res.status(403).json({ 
+        success: false,
+        error: 'Insufficient permissions to view user summary' 
+      });
+      return;
+    }
+
+    const summary = await User.getUserTypeSummary();
+
+    res.json({
+      success: true,
+      data: summary
+    });
+  } catch (error) {
+    console.error('User summary error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error while fetching user summary' 
     });
   }
 };
@@ -226,7 +345,11 @@ export const registerValidation = [
   body('lastName')
     .trim()
     .isLength({ min: 1 })
-    .withMessage('Last name is required')
+    .withMessage('Last name is required'),
+  body('role')
+    .optional()
+    .isIn(['user', 'admin'])
+    .withMessage('Role must be either user or admin')
 ];
 
 export const loginValidation = [
@@ -237,4 +360,12 @@ export const loginValidation = [
   body('password')
     .exists()
     .withMessage('Password is required')
+];
+
+export const adminValidation = [
+  ...registerValidation,
+  body('adminPermissions')
+    .optional()
+    .isObject()
+    .withMessage('Admin permissions must be an object')
 ];

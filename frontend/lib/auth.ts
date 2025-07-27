@@ -1,87 +1,102 @@
-import { NextAuthOptions } from "next-auth";
-import CredentialsProvider from "next-auth/providers/credentials";
+import { NextAuthOptions } from "next-auth"
+import { JWT } from "next-auth/jwt"
+import CredentialsProvider from "next-auth/providers/credentials"
 
+declare module "next-auth" {
+
+  interface User {
+    id: string;
+    role: string;
+    backendToken: string;
+  }
+
+  interface Account {}
+
+  interface Session {
+    userId: string;
+    role: string;
+    backendToken: string;
+    user: User; // Overriding the default user type
+  }
+}
+
+declare module "next-auth/jwt" {
+  /** Returned by the `jwt` callback and `getToken`, when using JWTs for sessions */
+  interface JWT {
+    userId: string;
+    role: string;
+    backendToken: string;
+  }
+}
+
+
+// 2. Your authOptions can now use these extended types without errors.
 export const authOptions: NextAuthOptions = {
   providers: [
     CredentialsProvider({
-      name: "credentials",
+      name: 'Credentials',
       credentials: {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" }
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) {
-          return null;
+          return null
         }
-
         try {
-          // Call your backend API
-          const response = await fetch(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/login`, {
+          const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/login`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              email: credentials.email,
-              password: credentials.password,
-            }),
-          });
-
-          const data = await response.json();
-
-          if (response.ok && data.success && data.data.token) {
-            return {
-              id: data.data.user.id,
-              email: data.data.user.email,
-              name: `${data.data.user.firstName} ${data.data.user.lastName}`,
-              token: data.data.token, // Backend JWT token
-            };
-          }
+            body: JSON.stringify(credentials),
+            headers: { "Content-Type": "application/json" }
+          })
           
-          return null;
+          const responseData = await res.json()
+
+          if (!res.ok || !responseData.success) {
+            return null
+          }
+
+          // The object returned here must match the extended User type above
+          return {
+            ...responseData.data.user,
+            backendToken: responseData.data.token,
+          }
         } catch (error) {
-          console.error('Auth error:', error);
+          console.error("Authorize error:", error);
           return null;
         }
-      },
-    }),
+      }
+    })
   ],
-  
+
   callbacks: {
     async jwt({ token, user }) {
-      // Persist the backend token in the JWT
+      // The 'user' object here will have the correct type, including 'role' and 'backendToken'
       if (user) {
-        token.backendToken = (user as any).token;
-        token.userId = user.id;
+        token.userId = user.id
+        token.role = user.role
+        token.backendToken = user.backendToken
       }
-      return token;
+      return token
     },
-    
     async session({ session, token }) {
-      // Send backend token to the client
-      (session as any).backendToken = token.backendToken;
-      (session as any).userId = token.userId;
-      return session;
-    },
-
-    async redirect({ url, baseUrl }) {
-      // Custom redirect logic after sign in
-      if (url.startsWith("/")) return `${baseUrl}${url}`
-      // If it's a relative URL, assume it's trying to go to dashboard
-      if (url === baseUrl) return `${baseUrl}/login`
-      return url
-    },
+      // The 'token' object has the correct type from the JWT declaration
+      if (token) {
+        session.userId = token.userId
+        session.role = token.role
+        session.backendToken = token.backendToken
+      }
+      return session
+    }
   },
   
   pages: {
-    signIn: "/login", // Change from /auth/login to /login
-    error: "/login", // Redirect errors to login page too
+    signIn: '/auth/login',
   },
   
   session: {
     strategy: "jwt",
-    maxAge: 24 * 60 * 60, // 24 hours
   },
-  
+
   secret: process.env.NEXTAUTH_SECRET,
 };

@@ -96,12 +96,20 @@ class AudioAgent:
                     file=audio_file,
                     response_format="verbose_json"
                 )
+            
+            # Calculate approximate tokens for transcription (rough estimate)
+            transcription_tokens = len(transcript.text.split()) * 0.75  # Rough estimate
+            
             return {
-                "success": True, "transcript": transcript.text, "language": transcript.language,
-                "duration": transcript.duration, "segments": transcript.segments
+                "success": True, 
+                "transcript": transcript.text, 
+                "language": transcript.language,
+                "duration": transcript.duration, 
+                "segments": transcript.segments,
+                "tokens_used": int(transcription_tokens)
             }
         except Exception as e:
-            return {"success": False, "error": f"Audio transcription failed: {str(e)}"}
+            return {"success": False, "error": f"Audio transcription failed: {str(e)}", "tokens_used": 0}
 
     def analyze_audio_with_openai(self, transcript_data: Dict[str, Any], query: str, audio_info: Dict) -> Dict[str, Any]:
         """Analyze transcribed audio content using OpenAI."""
@@ -109,7 +117,7 @@ class AudioAgent:
             print(f"🔍 Analyzing audio content with OpenAI...")
             transcript_text = transcript_data.get("transcript", "")
             if not transcript_text:
-                return {"success": False, "error": "No transcript available for analysis"}
+                return {"success": False, "error": "No transcript available for analysis", "tokens_used": 0}
 
             prompt = query or "Provide a comprehensive analysis of the following audio transcript."
             full_prompt = f"User Query: {prompt}\n\nTranscript:\n{transcript_text}"
@@ -123,9 +131,13 @@ class AudioAgent:
                 max_tokens=1500, temperature=0.3
             )
             analysis = response.choices[0].message.content
+            tokens_used = response.usage.total_tokens if response.usage else 0
+            
             return {
-                "success": True, "analysis": analysis, "model_used": "gpt-4o",
-                "tokens_used": response.usage.total_tokens if response.usage else 0,
+                "success": True, 
+                "analysis": analysis, 
+                "model_used": "gpt-4o",
+                "tokens_used": tokens_used,
                 "transcript_stats": {
                     "word_count": len(transcript_text.split()),
                     "character_count": len(transcript_text),
@@ -134,7 +146,7 @@ class AudioAgent:
                 }
             }
         except Exception as e:
-            return {"success": False, "error": f"OpenAI audio analysis error: {str(e)}"}
+            return {"success": False, "error": f"OpenAI audio analysis error: {str(e)}", "tokens_used": 0}
 
     def create_audio_analysis_agent(self) -> Agent:
         """Create a specialized audio analysis agent."""
@@ -172,12 +184,16 @@ class AudioAgent:
             crew = Crew(agents=[analysis_agent, synthesizer_agent], tasks=[enhancement_task, synthesis_task], verbose=True)
             result = crew.kickoff()
             
+            # Get tokens from crew usage metrics
+            crew_tokens = getattr(crew.usage_metrics, 'total_tokens', 0) if hasattr(crew, 'usage_metrics') else 0
+            
             return {
-                "success": True, "enhanced_analysis": str(result),
-                "tokens_used": crew.usage_metrics.total_tokens
+                "success": True, 
+                "enhanced_analysis": str(result),
+                "tokens_used": crew_tokens
             }
         except Exception as e:
-            return {"success": False, "error": f"CrewAI enhancement error: {str(e)}"}
+            return {"success": False, "error": f"CrewAI enhancement error: {str(e)}", "tokens_used": 0}
 
     def store_to_pixeltable(self, audio_path: str, query: str, result: Dict[str, Any], user_id: str, processing_time: float, success: bool) -> bool:
         """Stores the audio processing results to Pixeltable."""
@@ -187,8 +203,7 @@ class AudioAgent:
             print("💾 Storing audio results to Pixeltable database...")
             audio_info = self.get_audio_info(audio_path)
             res_data = result.get('result', {})
-            tech_details = res_data.get('technical_details', {})
-            tokens_used = tech_details.get('tokens_used', 0)
+            tokens_used = result.get('tokens', 0)  # Get tokens from top level
 
             if success:
                 crewai_result = {"primary_analysis": res_data.get('analysis', ''), "enhanced_response": res_data.get('enhanced_response', '')}
@@ -225,35 +240,63 @@ class AudioAgent:
             audio_info = self.get_audio_info(saved_audio_path)
             
             transcript_result = self.transcribe_audio_with_openai(saved_audio_path)
-            if not transcript_result.get("success"): raise ValueError(transcript_result.get("error"))
+            if not transcript_result.get("success"): 
+                raise ValueError(transcript_result.get("error"))
             
             openai_result = self.analyze_audio_with_openai(transcript_result, query, audio_info)
-            if not openai_result.get("success"): raise ValueError(openai_result.get("error"))
+            if not openai_result.get("success"): 
+                raise ValueError(openai_result.get("error"))
             
             crew_result = self.enhance_analysis_with_crew(openai_result, query, saved_audio_path, transcript_result)
             
             processing_time = time.time() - start_time
-            total_tokens = openai_result.get('tokens_used', 0) + crew_result.get('tokens_used', 0)
+            
+            # Calculate total tokens from all sources
+            transcription_tokens = transcript_result.get('tokens_used', 0)
+            analysis_tokens = openai_result.get('tokens_used', 0)
+            crew_tokens = crew_result.get('tokens_used', 0)
+            total_tokens = transcription_tokens + analysis_tokens + crew_tokens
 
             final_result = {
                 'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
                 'result': {
                     "transcript": transcript_result.get("transcript", ""),
                     "primary_analysis": openai_result.get("analysis", ""),
                     "enhanced_response": crew_result.get("enhanced_analysis", "") if crew_result.get("success") else "",
-                    "technical_details": {"tokens_used": total_tokens},
+                    "technical_details": {
+                        "tokens_used": total_tokens,
+                        "token_breakdown": {
+                            "transcription": transcription_tokens,
+                            "analysis": analysis_tokens,
+                            "crew_enhancement": crew_tokens
+                        }
+                    },
                 },
-                'query': query, 'processing_method': 'whisper + openai + crewai', 'processing_time': processing_time
+                'query': query, 
+                'processing_method': 'whisper + openai + crewai', 
+                'processing_time': processing_time
             }
+            
             self.store_to_pixeltable(saved_audio_path, query, final_result, user_id, processing_time, True)
+            print(f"📊 Total tokens used: {total_tokens}")
             return final_result
+            
         except Exception as e:
             processing_time = time.time() - start_time
-            error_result = {'success': False, 'error': str(e), 'query': query, 'processing_time': processing_time}
-            if saved_audio_path: self.store_to_pixeltable(saved_audio_path, query, error_result, user_id, processing_time, False)
+            error_result = {
+                'success': False, 
+                'tokens': 0,  # No tokens on error
+                'error': str(e), 
+                'query': query, 
+                'processing_time': processing_time
+            }
+            if saved_audio_path: 
+                self.store_to_pixeltable(saved_audio_path, query, error_result, user_id, processing_time, False)
             return error_result
         finally:
-            if original_path != saved_audio_path and saved_audio_path: self.cleanup_temp_file(original_path)
+            if original_path != saved_audio_path and saved_audio_path: 
+                self.cleanup_temp_file(original_path)
 
     def quick_analyze(self, audio_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
         """Quick analysis using OpenAI transcription and analysis only."""
@@ -266,30 +309,58 @@ class AudioAgent:
             audio_info = self.get_audio_info(saved_audio_path)
 
             transcript_result = self.transcribe_audio_with_openai(saved_audio_path)
-            if not transcript_result.get("success"): raise ValueError(transcript_result.get("error"))
+            if not transcript_result.get("success"): 
+                raise ValueError(transcript_result.get("error"))
             
             openai_result = self.analyze_audio_with_openai(transcript_result, query, audio_info)
-            if not openai_result.get("success"): raise ValueError(openai_result.get("error"))
+            if not openai_result.get("success"): 
+                raise ValueError(openai_result.get("error"))
             
             processing_time = time.time() - start_time
+            
+            # Calculate total tokens
+            transcription_tokens = transcript_result.get('tokens_used', 0)
+            analysis_tokens = openai_result.get('tokens_used', 0)
+            total_tokens = transcription_tokens + analysis_tokens
+            
             final_result = {
                 'success': True,
+                'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
                 'result': {
                     "transcript": transcript_result.get("transcript", ""),
                     "analysis": openai_result.get("analysis", ""),
-                    "technical_details": {"tokens_used": openai_result.get("tokens_used", 0)},
+                    "technical_details": {
+                        "tokens_used": total_tokens,
+                        "token_breakdown": {
+                            "transcription": transcription_tokens,
+                            "analysis": analysis_tokens
+                        }
+                    },
                 },
-                'query': query, 'processing_method': 'whisper + openai_only', 'processing_time': processing_time
+                'query': query, 
+                'processing_method': 'whisper + openai_only', 
+                'processing_time': processing_time
             }
+            
             self.store_to_pixeltable(saved_audio_path, query, final_result, user_id, processing_time, True)
+            print(f"📊 Total tokens used: {total_tokens}")
             return final_result
+            
         except Exception as e:
             processing_time = time.time() - start_time
-            error_result = {'success': False, 'error': str(e), 'query': query, 'processing_time': processing_time}
-            if saved_audio_path: self.store_to_pixeltable(saved_audio_path, query, error_result, user_id, processing_time, False)
+            error_result = {
+                'success': False, 
+                'tokens': 0,  # No tokens on error
+                'error': str(e), 
+                'query': query, 
+                'processing_time': processing_time
+            }
+            if saved_audio_path: 
+                self.store_to_pixeltable(saved_audio_path, query, error_result, user_id, processing_time, False)
             return error_result
         finally:
-            if original_path != saved_audio_path and saved_audio_path: self.cleanup_temp_file(original_path)
+            if original_path != saved_audio_path and saved_audio_path: 
+                self.cleanup_temp_file(original_path)
 
 if __name__ == "__main__":
     # Requires ffmpeg and mutagen to be installed
@@ -306,18 +377,20 @@ if __name__ == "__main__":
         agent = AudioAgent()
 
         print("\n" + "="*20 + " TESTING QUICK ANALYSIS " + "="*20)
-        agent.quick_analyze(
+        result = agent.quick_analyze(
             audio_path=dummy_audio_path,
             query="This is a silent audio file. Please confirm you received it.",
             user_id="audio_user_123"
         )
+        print(f"🔢 Tokens used in quick analysis: {result.get('tokens', 0)}")
         
         print("\n" + "="*20 + " TESTING FULL ANALYSIS " + "="*20)
-        agent.process_audio(
+        result = agent.process_audio(
             audio_path=dummy_audio_path,
             query="Analyze this silent audio and describe what you find.",
             user_id="audio_user_456"
         )
+        print(f"🔢 Tokens used in full analysis: {result.get('tokens', 0)}")
 
         if PIXELTABLE_AVAILABLE:
             print("\n" + "="*20 + " PULLING DATA FROM PIXELTABLE " + "="*20)
