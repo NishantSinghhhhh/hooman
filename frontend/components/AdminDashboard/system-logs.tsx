@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,30 +25,10 @@ interface Props {
 }
 
 export function SystemLogs({ adminUser }: Props) {
-  const [logs, setLogs] = useState<LogEntry[]>([])
-  const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState("")
   const [levelFilter, setLevelFilter] = useState<string>("all")
 
-  useEffect(() => {
-    fetchLogs()
-  }, [])
-
-  const fetchLogs = async () => {
-    try {
-      const response = await fetch("/api/admin/logs")
-      if (response.ok) {
-        const data = await response.json()
-        setLogs(data)
-      }
-    } catch (error) {
-      console.error("Failed to fetch logs:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Mock data for demonstration
+  // Enhanced mock logs
   const mockLogs: LogEntry[] = [
     {
       id: "1",
@@ -91,11 +71,46 @@ export function SystemLogs({ adminUser }: Props) {
       userEmail: adminUser.email,
       ipAddress: "192.168.1.1",
     },
+    {
+      id: "5",
+      timestamp: "2025-01-27T10:10:00Z",
+      level: "info",
+      category: "User Management",
+      message: "New user registered",
+      userId: "user999",
+      userEmail: "alice.johnson@example.com",
+      ipAddress: "192.168.1.105",
+    },
+    {
+      id: "6",
+      timestamp: "2025-01-27T10:05:00Z",
+      level: "warning",
+      category: "Security",
+      message: "Multiple failed login attempts detected",
+      userEmail: "suspicious@example.com",
+      ipAddress: "192.168.1.200",
+    },
+    {
+      id: "7",
+      timestamp: "2025-01-27T10:00:00Z",
+      level: "error",
+      category: "Database",
+      message: "Connection timeout to primary database",
+      ipAddress: "internal",
+    },
+    {
+      id: "8",
+      timestamp: "2025-01-27T09:55:00Z",
+      level: "success",
+      category: "Billing",
+      message: "Payment processed successfully",
+      userId: "user456",
+      userEmail: "jane.smith@example.com",
+      ipAddress: "192.168.1.101",
+    },
   ]
 
-  const displayLogs = logs.length > 0 ? logs : mockLogs
-
-  const filteredLogs = displayLogs.filter((log) => {
+  const filteredLogs = mockLogs.filter((log) => {
     const matchesSearch =
       log.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
       log.category.toLowerCase().includes(searchTerm.toLowerCase()) ||

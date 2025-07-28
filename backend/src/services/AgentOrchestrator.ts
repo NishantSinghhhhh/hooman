@@ -8,6 +8,7 @@ import {
   RoutingDecision
 } from '../types/agent';
 import fetch from 'node-fetch';
+import { Response } from 'node-fetch';
 
 export class AgentOrchestrator {
   private config: AgentConfig;
@@ -23,9 +24,14 @@ export class AgentOrchestrator {
   }
 
   /**
-   * Classify query and send to MCP backend
+   * Process query and return both classification and result data
    */
-  async processQuery(queryData: QueryData): Promise<QueryClassification> {
+  async processQuery(queryData: QueryData): Promise<{
+    classification: QueryClassification;
+    result: any;
+    processing_time: number;
+  }> {
+    const startTime = Date.now();
     console.log('🎯 Starting query classification...');
     console.log('📊 Query data:', {
       hasText: !!queryData.textQuery,
@@ -54,10 +60,16 @@ export class AgentOrchestrator {
         await AnalyticsController.updateRequestCount(queryData.userId, classification.agentType);
       }
 
-      // Step 5: Send classification to MCP backend
-      await this.sendClassificationToMCP(classification, queryData, routing);
-
-      return classification;
+      // Step 5: Send classification to MCP backend and get result
+      const mcpResult = await this.sendClassificationToMCP(classification, queryData, routing);
+      
+      const processingTime = Date.now() - startTime;
+      
+      return {
+        classification,
+        result: mcpResult,
+        processing_time: processingTime
+      };
 
     } catch (error) {
       console.error('❌ Classification error:', error);
@@ -83,51 +95,72 @@ export class AgentOrchestrator {
         await AnalyticsController.updateRequestCount(queryData.userId, fallbackClassification.agentType);
       }
       
-      // Also send fallback to MCP
+      const processingTime = Date.now() - startTime;
+      
+      // Try to send fallback to MCP, but don't fail if it doesn't work
+      let fallbackResult;
       try {
-        await this.sendClassificationToMCP(fallbackClassification, queryData, null);
+        fallbackResult = await this.sendClassificationToMCP(fallbackClassification, queryData, null);
       } catch (mcpError) {
         console.error('❌ Failed to send fallback to MCP:', mcpError);
+        fallbackResult = {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+          query: queryData.textQuery,
+          file_processed: (queryData.files && queryData.files.length > 0),
+          processing_time: processingTime,
+          result: {
+            primary_analysis: 'Processing failed due to classification error.',
+            enhanced_response: 'Unable to process the query at this time. Please try again.',
+            technical_details: {
+              model_used: 'fallback',
+              tokens_used: 0,
+              processing_time: `${processingTime}ms`,
+              enhancement_agents: []
+            },
+            query_details: {
+              original_query: queryData.textQuery,
+              query_type: 'error'
+            },
+            status: {
+              openai_analysis: 'failed',
+              crew_enhancement: 'failed',
+              overall: 'error'
+            }
+          }
+        };
       }
       
-      return fallbackClassification;
+      return {
+        classification: fallbackClassification,
+        result: fallbackResult,
+        processing_time: processingTime
+      };
     }
   }
 
-  private async sendTextRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+  private async sendTextRequest(queryData: QueryData, classification: QueryClassification): Promise<Response> {
     const payload = {
       query: queryData.textQuery || '',
       user_id: queryData.userId
     };
-  
-    const response = await fetch(`${this.mcpBackendUrl}/process-text`, {
+
+    console.log('📤 Sending text request to MCP backend...');
+    return await fetch(`${this.mcpBackendUrl}/process-text`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-  
-    if (response.ok) {
-      const result = await response.json() as { tokens?: number; [key: string]: any };
-      console.log('✅ Text processed by Python backend');
-      console.log(`📨 Result:`, result);
-      
-      // Update token count if response contains token info
-      if (result.tokens && queryData.userId) {
-        await AnalyticsController.updateTokenCount(queryData.userId, 'document', result.tokens);
-      }
-    } else {
-      console.error(`❌ Python backend error: ${response.status}`);
-    }
   }
   
-  private async sendImageRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+  private async sendImageRequest(queryData: QueryData, classification: QueryClassification): Promise<Response> {
     const formData = new FormData();
     formData.append('query', queryData.textQuery || '');
     
     if (queryData.userId) {
       formData.append('user_id', queryData.userId);
     }
-  
+
     if (queryData.files && queryData.files.length > 0) {
       const file = queryData.files[0];
       const fs = require('fs');
@@ -136,27 +169,15 @@ export class AgentOrchestrator {
       formData.append('file', blob, file.filename);
       console.log(`📁 Processing image file: ${file.filename} (${file.mimetype})`);
     }
-  
-    const response = await fetch(`${this.mcpBackendUrl}/process-image`, {
+
+    console.log('📤 Sending image request to MCP backend...');
+    return await fetch(`${this.mcpBackendUrl}/process-image`, {
       method: 'POST',
       body: formData
     });
-  
-    if (response.ok) {
-      const result = await response.json() as { tokens?: number; [key: string]: any };
-      console.log('✅ Image processed by Python backend');
-      console.log(`📨 Result:`, result);
-      
-      // Update token count if response contains token info
-      if (result.tokens && queryData.userId) {
-        await AnalyticsController.updateTokenCount(queryData.userId, 'image', result.tokens);
-      }
-    } else {
-      console.error(`❌ Python backend error: ${response.status}`);
-    }
   }
 
-  private async sendAudioRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+  private async sendAudioRequest(queryData: QueryData, classification: QueryClassification): Promise<Response> {
     const formData = new FormData();
     formData.append('query', queryData.textQuery || '');
     if (queryData.userId) {
@@ -171,26 +192,14 @@ export class AgentOrchestrator {
       console.log(`📁 Processing audio file: ${file.filename} (${file.mimetype})`);
     }
     
-    const response = await fetch(`${this.mcpBackendUrl}/process-audio`, {
+    console.log('📤 Sending audio request to MCP backend...');
+    return await fetch(`${this.mcpBackendUrl}/process-audio`, {
       method: 'POST',
       body: formData
     });
-    
-    if (response.ok) {
-      const result = await response.json() as { tokens?: number; [key: string]: any };
-      console.log('✅ Audio processed by Python backend');
-      console.log(`📨 Result:`, result);
-      
-      // Update token count if response contains token info
-      if (result.tokens && queryData.userId) {
-        await AnalyticsController.updateTokenCount(queryData.userId, 'audio', result.tokens);
-      }
-    } else {
-      console.error(`❌ Python backend error: ${response.status}`);
-    }
   }
   
-  private async sendVideoRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+  private async sendVideoRequest(queryData: QueryData, classification: QueryClassification): Promise<Response> {
     const formData = new FormData();
     formData.append('query', queryData.textQuery || '');
     if (queryData.userId) {
@@ -205,26 +214,14 @@ export class AgentOrchestrator {
       console.log(`📁 Processing video file: ${file.filename} (${file.mimetype})`);
     }
     
-    const response = await fetch(`${this.mcpBackendUrl}/process-video`, {
+    console.log('📤 Sending video request to MCP backend...');
+    return await fetch(`${this.mcpBackendUrl}/process-video`, {
       method: 'POST',
       body: formData
     });
-    
-    if (response.ok) {
-      const result = await response.json() as { tokens?: number; [key: string]: any };
-      console.log('✅ Video processed by Python backend');
-      console.log(`📨 Result:`, result);
-      
-      // Update token count if response contains token info
-      if (result.tokens && queryData.userId) {
-        await AnalyticsController.updateTokenCount(queryData.userId, 'video', result.tokens);
-      }
-    } else {
-      console.error(`❌ Python backend error: ${response.status}`);
-    }
   }
   
-  private async sendDocumentRequest(queryData: QueryData, classification: QueryClassification): Promise<void> {
+  private async sendDocumentRequest(queryData: QueryData, classification: QueryClassification): Promise<Response> {
     const formData = new FormData();
     formData.append('query', queryData.textQuery || '');
     if (queryData.userId) {
@@ -239,58 +236,74 @@ export class AgentOrchestrator {
       console.log(`📁 Processing document file: ${file.filename} (${file.mimetype})`);
     }
     
-    const response = await fetch(`${this.mcpBackendUrl}/process-document`, {
+    console.log('📤 Sending document request to MCP backend...');
+    return await fetch(`${this.mcpBackendUrl}/process-document`, {
       method: 'POST',
       body: formData
     });
-    
-    if (response.ok) {
-      const result = await response.json() as { tokens?: number; [key: string]: any };
-      console.log('✅ Document processed by Python backend');
-      console.log(`📨 Result:`, result);
-      
-      // Update token count if response contains token info
-      if (result.tokens && queryData.userId) {
-        await AnalyticsController.updateTokenCount(queryData.userId, 'document', result.tokens);
-      }
-    } else {
-      console.error(`❌ Python backend error: ${response.status}`);
-    }
   }
 
   private async sendClassificationToMCP(
     classification: QueryClassification, 
     queryData: QueryData, 
     routing: RoutingDecision | null
-  ): Promise<void> {
+  ): Promise<any> {
     try {
       console.log('📡 Sending to Python MCP backend...');
-  
+
+      let response: Response;
+      
       // Only file-based queries go to specialist endpoints
       if (queryData.files && queryData.files.length > 0) {
         switch (classification.agentType) {
           case 'image':
-            await this.sendImageRequest(queryData, classification);
-            return;
+            response = await this.sendImageRequest(queryData, classification);
+            break;
           case 'video':
-            await this.sendVideoRequest(queryData, classification);
-            return;
+            response = await this.sendVideoRequest(queryData, classification);
+            break;
           case 'audio':
-            await this.sendAudioRequest(queryData, classification);
-            return;
+            response = await this.sendAudioRequest(queryData, classification);
+            break;
           case 'document':
           default:
-            await this.sendDocumentRequest(queryData, classification);
-            return;
+            response = await this.sendDocumentRequest(queryData, classification);
+            break;
         }
       } else {
         // Pure text queries
-        await this.sendTextRequest(queryData, classification);
-        return;
+        response = await this.sendTextRequest(queryData, classification);
       }
-  
+
+      if (response.ok) {
+        const result = await response.json() as any;
+        console.log('✅ MCP Backend processed successfully');
+        console.log(`📨 Result structure:`, {
+          success: result.success,
+          hasResult: !!result.result,
+          processingTime: result.processing_time,
+          fileProcessed: result.file_processed
+        });
+        
+        // Update token count if response contains token info
+        if (result.result?.technical_details?.tokens_used && queryData.userId) {
+          await AnalyticsController.updateTokenCount(
+            queryData.userId, 
+            classification.agentType, 
+            result.result.technical_details.tokens_used
+          );
+        }
+        
+        return result;
+      } else {
+        const errorText = await response.text();
+        console.error(`❌ Python backend error: ${response.status} - ${errorText}`);
+        throw new Error(`MCP Backend error: ${response.status} - ${errorText}`);
+      }
+
     } catch (error) {
       console.error('❌ Failed to send to Python backend:', error);
+      throw error;
     }
   }
   
@@ -299,6 +312,7 @@ export class AgentOrchestrator {
     service: string;
     timestamp: string;
     mcpBackend?: string;
+    details?: any;
   }> {
     try {
       // Test classification with dummy data
@@ -308,29 +322,48 @@ export class AgentOrchestrator {
         files: []
       };
 
-      const classification = await this.processQuery(testQuery);
+      const result = await this.processQuery(testQuery);
       
       // Test MCP backend connectivity
       let mcpStatus = 'unknown';
+      let mcpDetails = {};
       try {
-        const mcpResponse = await fetch(`${this.mcpBackendUrl}/health`);
+        const mcpResponse = await fetch(`${this.mcpBackendUrl}/health`, {
+          method: 'GET',
+          // timeout: 5000
+        });
         mcpStatus = mcpResponse.ok ? 'healthy' : 'unhealthy';
-      } catch {
+        if (mcpResponse.ok) {
+          // mcpDetails = await mcpResponse.json();
+        }
+      } catch (mcpError) {
         mcpStatus = 'unreachable';
+        mcpDetails = { error: mcpError instanceof Error ? mcpError.message : String(mcpError) };
       }
       
       return {
-        status: classification.confidence > 0 ? 'healthy' : 'unhealthy',
-        service: 'classification',
+        status: result.classification.confidence > 0 ? 'healthy' : 'unhealthy',
+        service: 'AgentOrchestrator',
         timestamp: new Date().toISOString(),
-        mcpBackend: mcpStatus
+        mcpBackend: mcpStatus,
+        details: {
+          classification: {
+            confidence: result.classification.confidence,
+            agentType: result.classification.agentType
+          },
+          mcpBackend: mcpDetails,
+          processingTime: result.processing_time
+        }
       };
     } catch (error) {
       return {
         status: 'unhealthy',
-        service: 'classification',
+        service: 'AgentOrchestrator',
         timestamp: new Date().toISOString(),
-        mcpBackend: 'error'
+        mcpBackend: 'error',
+        details: {
+          error: error instanceof Error ? error.message : String(error)
+        }
       };
     }
   }

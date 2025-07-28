@@ -48,7 +48,8 @@ class App {
     const allowedOrigins = [
       process.env.FRONTEND_URL || 'http://localhost:3000',
       'http://localhost:3000',
-      'http://localhost:3001', // Added your frontend port here
+      'http://localhost:3001',
+      'http://localhost:3002', // Added your frontend port here
     ];
 
     // CORS configuration

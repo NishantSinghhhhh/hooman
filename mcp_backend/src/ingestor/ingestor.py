@@ -1,13 +1,23 @@
 """
 Fixed Pixeltable Agent Insert Functions
 =====================================
-Fixed functions for inserting data into agent tables with proper error handling.
+All functions now use complete isolation with ThreadPoolExecutor for inserting data into agent tables.
 """
 
 import pixeltable as pxt
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import json
+import threading
+import sys
+import os
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
+
+# =============================================================================
+# SHARED THREAD POOL EXECUTOR
+# =============================================================================
+db_executor = ThreadPoolExecutor(max_workers=2)
 
 # =============================================================================
 # 🖼️ IMAGE AGENT INSERT FUNCTIONS
@@ -22,95 +32,113 @@ def insert_image_record(
     context: str = "Image analysis",
     metadata: Optional[Dict[str, Any]] = None
 ) -> bool:
-    """
-    Insert a single image analysis record
+    """Insert a single image analysis record using complete isolation"""
     
-    Args:
-        user_id: User identifier
-        image_path: Path to the image file
-        query: User's query about the image
-        crewai_result: AI agent's analysis result
-        tokens_used: Number of tokens consumed
-        context: Context description
-        metadata: Additional metadata (optional)
-    
-    Returns:
-        bool: Success status
-    """
-    try:
-        table = pxt.get_table('demo.images')
+    def _insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        # Convert complex objects to JSON strings to avoid serialization issues
-        metadata_json = json.dumps(metadata or {})
-        crewai_result_json = json.dumps(crewai_result)
-        
-        # Create record as a simple dictionary with basic types only
-        record = {
-            'user_id': str(user_id),
-            'image': str(image_path),
-            'file_path': str(image_path),
-            'query': str(query),
-            'metadata': metadata_json,  # JSON string
-            'crewai_result': crewai_result_json,  # JSON string
-            'tokens_used': int(tokens_used),
-            'context': str(context),
-            'timestamp': datetime.now()
-        }
-        
-        # Insert as a list (required by Pixeltable)
-        table.insert([record])
-        return True
-        
-    except Exception as e:
-        print(f"Error inserting image record: {e}")
-        return False
-
-def batch_insert_images(records: List[Dict[str, Any]]) -> bool:
-    """
-    Insert multiple image records at once
-    
-    Args:
-        records: List of image record dictionaries
-    
-    Returns:
-        bool: Success status
-    """
-    try:
-        table = pxt.get_table('demo.images')
-        
-        # Process each record to ensure proper format
-        processed_records = []
-        for record in records:
-            # Add timestamp if not present
-            if 'timestamp' not in record:
-                record['timestamp'] = datetime.now()
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            # Get or create table
+            table = pxt.get_table('demo.images')
             
             # Convert complex objects to JSON strings
-            if 'metadata' in record and isinstance(record['metadata'], dict):
-                record['metadata'] = json.dumps(record['metadata'])
-            if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
-                record['crewai_result'] = json.dumps(record['crewai_result'])
+            metadata_json = json.dumps(metadata or {})
+            crewai_result_json = json.dumps(crewai_result)
             
-            # Ensure all values are proper types
-            processed_record = {
-                'user_id': str(record.get('user_id', '')),
-                'image': str(record.get('image', '')),
-                'file_path': str(record.get('file_path', '')),
-                'query': str(record.get('query', '')),
-                'metadata': record.get('metadata', '{}'),
-                'crewai_result': record.get('crewai_result', '{}'),
-                'tokens_used': int(record.get('tokens_used', 0)),
-                'context': str(record.get('context', 'Image analysis')),
-                'timestamp': record['timestamp']
+            record = {
+                'user_id': str(user_id),
+                'image': str(image_path),
+                'file_path': str(image_path),
+                'query': str(query),
+                'metadata': metadata_json,
+                'crewai_result': crewai_result_json,
+                'tokens_used': int(tokens_used),
+                'context': str(context),
+                'timestamp': datetime.now()
             }
-            processed_records.append(processed_record)
+            
+            # Use synchronous insert if available
+            table.insert([record])
+            return True
+            
+        except Exception as e:
+            print(f"Error inserting image record: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_insert)
+    return future.result()
+
+def batch_insert_images(records: List[Dict[str, Any]]) -> bool:
+    """Insert multiple image records at once using complete isolation"""
+    
+    def _batch_insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        table.insert(processed_records)
-        return True
-        
-    except Exception as e:
-        print(f"Error batch inserting image records: {e}")
-        return False
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.images')
+            
+            # Process each record to ensure proper format
+            processed_records = []
+            for record in records:
+                # Add timestamp if not present
+                if 'timestamp' not in record:
+                    record['timestamp'] = datetime.now()
+                
+                # Convert complex objects to JSON strings
+                if 'metadata' in record and isinstance(record['metadata'], dict):
+                    record['metadata'] = json.dumps(record['metadata'])
+                if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
+                    record['crewai_result'] = json.dumps(record['crewai_result'])
+                
+                # Ensure all values are proper types
+                processed_record = {
+                    'user_id': str(record.get('user_id', '')),
+                    'image': str(record.get('image', '')),
+                    'file_path': str(record.get('file_path', '')),
+                    'query': str(record.get('query', '')),
+                    'metadata': record.get('metadata', '{}'),
+                    'crewai_result': record.get('crewai_result', '{}'),
+                    'tokens_used': int(record.get('tokens_used', 0)),
+                    'context': str(record.get('context', 'Image analysis')),
+                    'timestamp': record['timestamp']
+                }
+                processed_records.append(processed_record)
+            
+            table.insert(processed_records)
+            return True
+            
+        except Exception as e:
+            print(f"Error batch inserting image records: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_batch_insert)
+    return future.result()
 
 # =============================================================================
 # 📄 DOCUMENT AGENT INSERT FUNCTIONS
@@ -127,76 +155,112 @@ def insert_document_record(
     context: str = "Document analysis",
     metadata: Optional[Dict[str, Any]] = None
 ) -> bool:
-    """
-    Insert a single document analysis record
-    """
-    try:
-        table = pxt.get_table('demo.documents')
+    """Insert a single document analysis record using complete isolation"""
+    
+    def _insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        # Convert complex objects to JSON strings
-        metadata_json = json.dumps(metadata or {})
-        crewai_result_json = json.dumps(crewai_result)
-        
-        record = {
-            'user_id': str(user_id),
-            'document': str(document_path),
-            'file_path': str(document_path),
-            'document_type': str(document_type),
-            'page_count': int(page_count),
-            'query': str(query),
-            'metadata': metadata_json,
-            'crewai_result': crewai_result_json,
-            'tokens_used': int(tokens_used),
-            'context': str(context),
-            'timestamp': datetime.now()
-        }
-        
-        table.insert([record])
-        return True
-        
-    except Exception as e:
-        print(f"Error inserting document record: {e}")
-        return False
-
-def batch_insert_documents(records: List[Dict[str, Any]]) -> bool:
-    """
-    Insert multiple document records at once
-    """
-    try:
-        table = pxt.get_table('demo.documents')
-        
-        processed_records = []
-        for record in records:
-            if 'timestamp' not in record:
-                record['timestamp'] = datetime.now()
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.documents')
             
             # Convert complex objects to JSON strings
-            if 'metadata' in record and isinstance(record['metadata'], dict):
-                record['metadata'] = json.dumps(record['metadata'])
-            if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
-                record['crewai_result'] = json.dumps(record['crewai_result'])
+            metadata_json = json.dumps(metadata or {})
+            crewai_result_json = json.dumps(crewai_result)
             
-            processed_record = {
-                'user_id': str(record.get('user_id', '')),
-                'document': str(record.get('document', '')),
-                'file_path': str(record.get('file_path', '')),
-                'document_type': str(record.get('document_type', '')),
-                'page_count': int(record.get('page_count', 0)),
-                'query': str(record.get('query', '')),
-                'metadata': record.get('metadata', '{}'),
-                'crewai_result': record.get('crewai_result', '{}'),
-                'tokens_used': int(record.get('tokens_used', 0)),
-                'context': str(record.get('context', 'Document analysis')),
-                'timestamp': record['timestamp']
+            record = {
+                'user_id': str(user_id),
+                'document': str(document_path),
+                'file_path': str(document_path),
+                'document_type': str(document_type),
+                'page_count': int(page_count),
+                'query': str(query),
+                'metadata': metadata_json,
+                'crewai_result': crewai_result_json,
+                'tokens_used': int(tokens_used),
+                'context': str(context),
+                'timestamp': datetime.now()
             }
-            processed_records.append(processed_record)
+            
+            table.insert([record])
+            return True
+            
+        except Exception as e:
+            print(f"Error inserting document record: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_insert)
+    return future.result()
+
+def batch_insert_documents(records: List[Dict[str, Any]]) -> bool:
+    """Insert multiple document records at once using complete isolation"""
+    
+    def _batch_insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        table.insert(processed_records)
-        return True
-        
-    except Exception as e:
-        print(f"Error batch inserting document records: {e}")
-        return False
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.documents')
+            
+            processed_records = []
+            for record in records:
+                if 'timestamp' not in record:
+                    record['timestamp'] = datetime.now()
+                
+                # Convert complex objects to JSON strings
+                if 'metadata' in record and isinstance(record['metadata'], dict):
+                    record['metadata'] = json.dumps(record['metadata'])
+                if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
+                    record['crewai_result'] = json.dumps(record['crewai_result'])
+                
+                processed_record = {
+                    'user_id': str(record.get('user_id', '')),
+                    'document': str(record.get('document', '')),
+                    'file_path': str(record.get('file_path', '')),
+                    'document_type': str(record.get('document_type', '')),
+                    'page_count': int(record.get('page_count', 0)),
+                    'query': str(record.get('query', '')),
+                    'metadata': record.get('metadata', '{}'),
+                    'crewai_result': record.get('crewai_result', '{}'),
+                    'tokens_used': int(record.get('tokens_used', 0)),
+                    'context': str(record.get('context', 'Document analysis')),
+                    'timestamp': record['timestamp']
+                }
+                processed_records.append(processed_record)
+            
+            table.insert(processed_records)
+            return True
+            
+        except Exception as e:
+            print(f"Error batch inserting document records: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_batch_insert)
+    return future.result()
 
 # =============================================================================
 # 🎞️ VIDEO AGENT INSERT FUNCTIONS
@@ -214,78 +278,114 @@ def insert_video_record(
     context: str = "Video analysis",
     metadata: Optional[Dict[str, Any]] = None
 ) -> bool:
-    """
-    Insert a single video analysis record
-    """
-    try:
-        table = pxt.get_table('demo.videos')
+    """Insert a single video analysis record using complete isolation"""
+    
+    def _insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        # Convert complex objects to JSON strings
-        metadata_json = json.dumps(metadata or {})
-        crewai_result_json = json.dumps(crewai_result)
-        
-        record = {
-            'user_id': str(user_id),
-            'video': str(video_path),
-            'file_path': str(video_path),
-            'duration': float(duration),
-            'fps': float(fps),
-            'resolution': str(resolution),
-            'query': str(query),
-            'metadata': metadata_json,
-            'crewai_result': crewai_result_json,
-            'tokens_used': int(tokens_used),
-            'context': str(context),
-            'timestamp': datetime.now()
-        }
-        
-        table.insert([record])
-        return True
-        
-    except Exception as e:
-        print(f"Error inserting video record: {e}")
-        return False
-
-def batch_insert_videos(records: List[Dict[str, Any]]) -> bool:
-    """
-    Insert multiple video records at once
-    """
-    try:
-        table = pxt.get_table('demo.videos')
-        
-        processed_records = []
-        for record in records:
-            if 'timestamp' not in record:
-                record['timestamp'] = datetime.now()
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.videos')
             
             # Convert complex objects to JSON strings
-            if 'metadata' in record and isinstance(record['metadata'], dict):
-                record['metadata'] = json.dumps(record['metadata'])
-            if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
-                record['crewai_result'] = json.dumps(record['crewai_result'])
+            metadata_json = json.dumps(metadata or {})
+            crewai_result_json = json.dumps(crewai_result)
             
-            processed_record = {
-                'user_id': str(record.get('user_id', '')),
-                'video': str(record.get('video', '')),
-                'file_path': str(record.get('file_path', '')),
-                'duration': float(record.get('duration', 0.0)),
-                'fps': float(record.get('fps', 0.0)),
-                'resolution': str(record.get('resolution', '')),
-                'query': str(record.get('query', '')),
-                'metadata': record.get('metadata', '{}'),
-                'crewai_result': record.get('crewai_result', '{}'),
-                'tokens_used': int(record.get('tokens_used', 0)),
-                'context': str(record.get('context', 'Video analysis')),
-                'timestamp': record['timestamp']
+            record = {
+                'user_id': str(user_id),
+                'video': str(video_path),
+                'file_path': str(video_path),
+                'duration': float(duration),
+                'fps': float(fps),
+                'resolution': str(resolution),
+                'query': str(query),
+                'metadata': metadata_json,
+                'crewai_result': crewai_result_json,
+                'tokens_used': int(tokens_used),
+                'context': str(context),
+                'timestamp': datetime.now()
             }
-            processed_records.append(processed_record)
+            
+            table.insert([record])
+            return True
+            
+        except Exception as e:
+            print(f"Error inserting video record: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_insert)
+    return future.result()
+
+def batch_insert_videos(records: List[Dict[str, Any]]) -> bool:
+    """Insert multiple video records at once using complete isolation"""
+    
+    def _batch_insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        table.insert(processed_records)
-        return True
-        
-    except Exception as e:
-        print(f"Error batch inserting video records: {e}")
-        return False
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.videos')
+            
+            processed_records = []
+            for record in records:
+                if 'timestamp' not in record:
+                    record['timestamp'] = datetime.now()
+                
+                # Convert complex objects to JSON strings
+                if 'metadata' in record and isinstance(record['metadata'], dict):
+                    record['metadata'] = json.dumps(record['metadata'])
+                if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
+                    record['crewai_result'] = json.dumps(record['crewai_result'])
+                
+                processed_record = {
+                    'user_id': str(record.get('user_id', '')),
+                    'video': str(record.get('video', '')),
+                    'file_path': str(record.get('file_path', '')),
+                    'duration': float(record.get('duration', 0.0)),
+                    'fps': float(record.get('fps', 0.0)),
+                    'resolution': str(record.get('resolution', '')),
+                    'query': str(record.get('query', '')),
+                    'metadata': record.get('metadata', '{}'),
+                    'crewai_result': record.get('crewai_result', '{}'),
+                    'tokens_used': int(record.get('tokens_used', 0)),
+                    'context': str(record.get('context', 'Video analysis')),
+                    'timestamp': record['timestamp']
+                }
+                processed_records.append(processed_record)
+            
+            table.insert(processed_records)
+            return True
+            
+        except Exception as e:
+            print(f"Error batch inserting video records: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_batch_insert)
+    return future.result()
 
 # =============================================================================
 # 🔊 AUDIO AGENT INSERT FUNCTIONS
@@ -304,80 +404,116 @@ def insert_audio_record(
     context: str = "Audio analysis",
     metadata: Optional[Dict[str, Any]] = None
 ) -> bool:
-    """
-    Insert a single audio analysis record
-    """
-    try:
-        table = pxt.get_table('demo.audio')
+    """Insert a single audio analysis record using complete isolation"""
+    
+    def _insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        # Convert complex objects to JSON strings
-        metadata_json = json.dumps(metadata or {})
-        crewai_result_json = json.dumps(crewai_result)
-        
-        record = {
-            'user_id': str(user_id),
-            'audio': str(audio_path),
-            'file_path': str(audio_path),
-            'duration': float(duration),
-            'sample_rate': int(sample_rate),
-            'channels': int(channels),
-            'format': str(format),
-            'query': str(query),
-            'metadata': metadata_json,
-            'crewai_result': crewai_result_json,
-            'tokens_used': int(tokens_used),
-            'context': str(context),
-            'timestamp': datetime.now()
-        }
-        
-        table.insert([record])
-        return True
-        
-    except Exception as e:
-        print(f"Error inserting audio record: {e}")
-        return False
-
-def batch_insert_audio(records: List[Dict[str, Any]]) -> bool:
-    """
-    Insert multiple audio records at once
-    """
-    try:
-        table = pxt.get_table('demo.audio')
-        
-        processed_records = []
-        for record in records:
-            if 'timestamp' not in record:
-                record['timestamp'] = datetime.now()
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.audio')
             
             # Convert complex objects to JSON strings
-            if 'metadata' in record and isinstance(record['metadata'], dict):
-                record['metadata'] = json.dumps(record['metadata'])
-            if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
-                record['crewai_result'] = json.dumps(record['crewai_result'])
+            metadata_json = json.dumps(metadata or {})
+            crewai_result_json = json.dumps(crewai_result)
             
-            processed_record = {
-                'user_id': str(record.get('user_id', '')),
-                'audio': str(record.get('audio', '')),
-                'file_path': str(record.get('file_path', '')),
-                'duration': float(record.get('duration', 0.0)),
-                'sample_rate': int(record.get('sample_rate', 44100)),
-                'channels': int(record.get('channels', 2)),
-                'format': str(record.get('format', '')),
-                'query': str(record.get('query', '')),
-                'metadata': record.get('metadata', '{}'),
-                'crewai_result': record.get('crewai_result', '{}'),
-                'tokens_used': int(record.get('tokens_used', 0)),
-                'context': str(record.get('context', 'Audio analysis')),
-                'timestamp': record['timestamp']
+            record = {
+                'user_id': str(user_id),
+                'audio': str(audio_path),
+                'file_path': str(audio_path),
+                'duration': float(duration),
+                'sample_rate': int(sample_rate),
+                'channels': int(channels),
+                'format': str(format),
+                'query': str(query),
+                'metadata': metadata_json,
+                'crewai_result': crewai_result_json,
+                'tokens_used': int(tokens_used),
+                'context': str(context),
+                'timestamp': datetime.now()
             }
-            processed_records.append(processed_record)
+            
+            table.insert([record])
+            return True
+            
+        except Exception as e:
+            print(f"Error inserting audio record: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_insert)
+    return future.result()
+
+def batch_insert_audio(records: List[Dict[str, Any]]) -> bool:
+    """Insert multiple audio records at once using complete isolation"""
+    
+    def _batch_insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        table.insert(processed_records)
-        return True
-        
-    except Exception as e:
-        print(f"Error batch inserting audio records: {e}")
-        return False
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.audio')
+            
+            processed_records = []
+            for record in records:
+                if 'timestamp' not in record:
+                    record['timestamp'] = datetime.now()
+                
+                # Convert complex objects to JSON strings
+                if 'metadata' in record and isinstance(record['metadata'], dict):
+                    record['metadata'] = json.dumps(record['metadata'])
+                if 'crewai_result' in record and isinstance(record['crewai_result'], dict):
+                    record['crewai_result'] = json.dumps(record['crewai_result'])
+                
+                processed_record = {
+                    'user_id': str(record.get('user_id', '')),
+                    'audio': str(record.get('audio', '')),
+                    'file_path': str(record.get('file_path', '')),
+                    'duration': float(record.get('duration', 0.0)),
+                    'sample_rate': int(record.get('sample_rate', 44100)),
+                    'channels': int(record.get('channels', 2)),
+                    'format': str(record.get('format', '')),
+                    'query': str(record.get('query', '')),
+                    'metadata': record.get('metadata', '{}'),
+                    'crewai_result': record.get('crewai_result', '{}'),
+                    'tokens_used': int(record.get('tokens_used', 0)),
+                    'context': str(record.get('context', 'Audio analysis')),
+                    'timestamp': record['timestamp']
+                }
+                processed_records.append(processed_record)
+            
+            table.insert(processed_records)
+            return True
+            
+        except Exception as e:
+            print(f"Error batch inserting audio records: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_batch_insert)
+    return future.result()
 
 # =============================================================================
 # 📊 MASTER TRACKING INSERT FUNCTIONS
@@ -394,34 +530,52 @@ def insert_tracking_record(
     success: bool = True,
     error_message: Optional[str] = None
 ) -> bool:
-    """
-    Insert a tracking record for monitoring agent performance
-    """
-    try:
-        table = pxt.get_table('demo.agent_tracking')
+    """Insert a tracking record for monitoring agent performance using complete isolation"""
+    
+    def _insert():
+        # Save the current event loop policy
+        old_policy = asyncio.get_event_loop_policy()
         
-        record = {
-            'user_id': str(user_id),
-            'agent_type': str(agent_type),
-            'table_name': str(table_name),
-            'record_id': str(record_id),
-            'query': str(query),
-            'tokens_used': int(tokens_used),
-            'processing_time': float(processing_time),
-            'success': bool(success),
-            'error_message': str(error_message) if error_message else None,
-            'timestamp': datetime.now()
-        }
-        
-        table.insert([record])
-        return True
-        
-    except Exception as e:
-        print(f"Error inserting tracking record: {e}")
-        return False
+        try:
+            # Create a completely new event loop policy
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            
+            # Import pxt locally to ensure fresh initialization
+            import pixeltable as pxt
+            
+            table = pxt.get_table('demo.agent_tracking')
+            
+            record = {
+                'user_id': str(user_id),
+                'agent_type': str(agent_type),
+                'table_name': str(table_name),
+                'record_id': str(record_id),
+                'query': str(query),
+                'tokens_used': int(tokens_used),
+                'processing_time': float(processing_time),
+                'success': bool(success),
+                'error_message': str(error_message) if error_message else None,
+                'timestamp': datetime.now()
+            }
+            
+            table.insert([record])
+            return True
+            
+        except Exception as e:
+            print(f"Error inserting tracking record: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            # Restore the original event loop policy
+            asyncio.set_event_loop_policy(old_policy)
+    
+    # Execute in thread pool with complete isolation
+    future = db_executor.submit(_insert)
+    return future.result()
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS (keeping original implementation as they're read-only)
 # =============================================================================
 
 def get_user_records(user_id: str, agent_type: Optional[str] = None) -> Dict[str, Any]:
@@ -559,12 +713,33 @@ def example_image_insert():
         }
     )
 
+def example_document_insert():
+    """Example of how to use document insert function"""
+    return insert_document_record(
+        user_id="user123",
+        document_path="/uploads/docs/report.pdf",
+        document_type="pdf",
+        page_count=25,
+        query="Summarize this document",
+        crewai_result={
+            "summary": "This is a quarterly financial report...",
+            "key_points": ["Revenue up 15%", "New market expansion"]
+        },
+        tokens_used=500,
+        context="Document summarization",
+        metadata={
+            "file_size_mb": 5.2,
+            "language": "english"
+        }
+    )
+
 if __name__ == "__main__":
     # Test the functions
-    print("Testing fixed insert functions...")
+    print("Testing fixed insert functions with complete isolation...")
     
-    # Test single insert
+    # Test single inserts
     print("✅ Image insert:", example_image_insert())
+    print("✅ Document insert:", example_document_insert())
     
     # Test utility functions
     print("📊 Token usage summary:", get_token_usage_summary())

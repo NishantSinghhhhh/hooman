@@ -1,5 +1,5 @@
 import React from 'react'
-import ChatsPage from '@/components/chatsPage/ChatsPage'
+import ChatsPage from '@/components/chatsPage/chats-page'
 type Props = {}
 
 const page = (props: Props) => {

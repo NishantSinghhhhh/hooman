@@ -1,6 +1,6 @@
 // app/analytics/[id]/page.tsx
 import React from "react"
-import AnalyticsClient from "../../../components/AnalyticsPage.tsx/AnalyticsClient"
+import AnalyticsClient from "@/components/AnalyticsPage.tsx/analytics-client"
 
 interface Props {
   params: Promise<{ id: string }>

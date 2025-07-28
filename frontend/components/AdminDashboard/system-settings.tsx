@@ -44,20 +44,8 @@ export function SystemSettings({ adminUser }: Props) {
   })
 
   const handleSave = async (section: string) => {
-    try {
-      const response = await fetch(`/api/admin/settings/${section}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings[section as keyof typeof settings]),
-      })
-
-      if (response.ok) {
-        // Show success message
-        console.log("Settings saved successfully")
-      }
-    } catch (error) {
-      console.error("Failed to save settings:", error)
-    }
+    console.log(`Saving ${section} settings:`, settings[section as keyof typeof settings])
+    // In a real app, this would make an API call
   }
 
   return (

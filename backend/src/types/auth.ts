@@ -209,3 +209,4 @@ export interface UsageCheckResult {
   allowed: boolean;
   reason?: string;
 }
+

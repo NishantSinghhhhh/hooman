@@ -1,35 +1,28 @@
-import { useState, useEffect } from "react"
+"use client"
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts"
-import { TrendingUp, Users, Activity, DollarSign } from 'lucide-react'
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts"
+import { TrendingUp, Users, Activity, DollarSign } from "lucide-react"
 
 interface Props {
   adminUser: any
 }
 
 export function SystemAnalytics({ adminUser }: Props) {
-  const [analyticsData, setAnalyticsData] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    fetchAnalytics()
-  }, [])
-
-  const fetchAnalytics = async () => {
-    try {
-      const response = await fetch("/api/admin/analytics")
-      if (response.ok) {
-        const data = await response.json()
-        setAnalyticsData(data)
-      }
-    } catch (error) {
-      console.error("Failed to fetch analytics:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
   // Mock data for demonstration
   const mockData = {
     userGrowth: [
@@ -64,15 +57,11 @@ export function SystemAnalytics({ adminUser }: Props) {
     ],
   }
 
-  const data = analyticsData || mockData
-
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-3xl font-bold text-gray-900 dark:text-white">System Analytics</h2>
-        <p className="text-gray-600 dark:text-gray-400 mt-1">
-          Comprehensive system performance and usage analytics
-        </p>
+        <p className="text-gray-600 dark:text-gray-400 mt-1">Comprehensive system performance and usage analytics</p>
       </div>
 
       <Tabs defaultValue="overview" className="space-y-6">
@@ -134,9 +123,7 @@ export function SystemAnalytics({ adminUser }: Props) {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">$12.37</div>
-                <p className="text-xs text-muted-foreground">
-                  +1.6% from last month
-                </p>
+                <p className="text-xs text-muted-foreground">+1.6% from last month</p>
               </CardContent>
             </Card>
           </div>
@@ -151,7 +138,7 @@ export function SystemAnalytics({ adminUser }: Props) {
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
-                        data={data.modalityBreakdown}
+                        data={mockData.modalityBreakdown}
                         cx="50%"
                         cy="50%"
                         outerRadius={80}
@@ -159,7 +146,7 @@ export function SystemAnalytics({ adminUser }: Props) {
                         dataKey="value"
                         // label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                       >
-                        {data.modalityBreakdown.map((entry: any, index: number) => (
+                        {mockData.modalityBreakdown.map((entry: any, index: number) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
                         ))}
                       </Pie>
@@ -177,7 +164,7 @@ export function SystemAnalytics({ adminUser }: Props) {
               <CardContent>
                 <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={data.userGrowth}>
+                    <LineChart data={mockData.userGrowth}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="month" />
                       <YAxis />
@@ -200,7 +187,7 @@ export function SystemAnalytics({ adminUser }: Props) {
             <CardContent>
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={data.userGrowth}>
+                  <BarChart data={mockData.userGrowth}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="month" />
                     <YAxis />
@@ -222,7 +209,7 @@ export function SystemAnalytics({ adminUser }: Props) {
             <CardContent>
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={data.tokenUsage}>
+                  <BarChart data={mockData.tokenUsage}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="date" />
                     <YAxis />
@@ -246,7 +233,7 @@ export function SystemAnalytics({ adminUser }: Props) {
             <CardContent>
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.revenue}>
+                  <LineChart data={mockData.revenue}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="month" />
                     <YAxis />

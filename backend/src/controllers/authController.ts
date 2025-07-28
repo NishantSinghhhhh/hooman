@@ -167,34 +167,152 @@ export const login = async (
     });
   }
 };
+// First, update the UserResponse interface to include all fields
+interface UserR {
+  id: string
+  email: string
+  firstName: string
+  lastName: string
+  role: 'user' | 'admin'
+  isActive: boolean
+  lastLogin?: Date
+  userSettings: {
+    monthlyTokenLimit: number
+    monthlyRequestLimit: number
+    canUseVideo: boolean
+    canUseAudio: boolean
+    canUseDocument: boolean
+    canUseImage: boolean
+    theme: 'light' | 'dark' | 'auto'
+    language: string
+    emailNotifications: boolean
+    usageAlerts: boolean
+    accountCreated: Date
+  }
+  adminSettings: {
+    canManageUsers: boolean
+    canViewSystemAnalytics: boolean
+    canManageSystemSettings: boolean
+    canAccessLogs: boolean
+    canManageBilling: boolean
+    hasUnlimitedUsage: boolean
+    canOverrideUserLimits: boolean
+    lastAdminAction?: Date
+    adminActionCount: number
+  }
+  analytics: {
+    totalSpend: number
+    totalTokens: number
+    totalRequests: number
+    currentMonthTokens: number
+    currentMonthRequests: number
+    currentMonthStart: Date
+    lastUpdated: Date
+    tokens: {
+      video: number
+      audio: number
+      document: number
+      image: number
+    }
+    requests: {
+      video: number
+      audio: number
+      document: number
+      image: number
+    }
+  }
+  dailyUsage: any[]
+  createdAt: Date
+  updatedAt: Date
+}
 
 export const getProfile = async (
   req: Request,
   res: Response<IApiResponse<UserResponse>>
 ): Promise<void> => {
   try {
-    const userResponse: UserResponse = {
-      id: req.user!._id,
-      email: req.user!.email,
-      firstName: req.user!.firstName,
-      lastName: req.user!.lastName,
-      role: req.user!.role,
-      lastLogin: req.user!.lastLogin,
-      isActive: req.user!.isActive
-    };
+    console.log(`[getProfile] Request received for user ID: ${req.user?._id}`)
+
+    const user = req.user!
+
+    const userResponse: UserR = {
+      id: user._id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role,
+      isActive: user.isActive,
+      lastLogin: user.lastLogin,
+
+      userSettings: {
+        monthlyTokenLimit: user.userSettings?.monthlyTokenLimit || 100000,
+        monthlyRequestLimit: user.userSettings?.monthlyRequestLimit || 1000,
+        canUseVideo: user.userSettings?.canUseVideo || false,
+        canUseAudio: user.userSettings?.canUseAudio || false,
+        canUseDocument: user.userSettings?.canUseDocument || false,
+        canUseImage: user.userSettings?.canUseImage || false,
+        theme: user.userSettings?.theme || 'auto',
+        language: user.userSettings?.language || 'en',
+        emailNotifications: user.userSettings?.emailNotifications || true,
+        usageAlerts: user.userSettings?.usageAlerts || true,
+        accountCreated: user.userSettings?.accountCreated || user.createdAt,
+      },
+
+      adminSettings: {
+        canManageUsers: user.adminSettings?.canManageUsers || false,
+        canViewSystemAnalytics: user.adminSettings?.canViewSystemAnalytics || false,
+        canManageSystemSettings: user.adminSettings?.canManageSystemSettings || false,
+        canAccessLogs: user.adminSettings?.canAccessLogs || false,
+        canManageBilling: user.adminSettings?.canManageBilling || false,
+        hasUnlimitedUsage: user.adminSettings?.hasUnlimitedUsage || false,
+        canOverrideUserLimits: user.adminSettings?.canOverrideUserLimits || false,
+        lastAdminAction: user.adminSettings?.lastAdminAction,
+        adminActionCount: user.adminSettings?.adminActionCount || 0,
+      },
+
+      analytics: {
+        totalSpend: user.analytics?.totalSpend || 0,
+        totalTokens: user.analytics?.totalTokens || 0,
+        totalRequests: user.analytics?.totalRequests || 0,
+        currentMonthTokens: user.analytics?.currentMonthTokens || 0,
+        currentMonthRequests: user.analytics?.currentMonthRequests || 0,
+        currentMonthStart: user.analytics?.currentMonthStart || user.createdAt,
+        lastUpdated: user.analytics?.lastUpdated || user.updatedAt,
+        tokens: {
+          video: user.analytics?.tokens?.video || 0,
+          audio: user.analytics?.tokens?.audio || 0,
+          document: user.analytics?.tokens?.document || 0,
+          image: user.analytics?.tokens?.image || 0,
+        },
+        requests: {
+          video: user.analytics?.requests?.video || 0,
+          audio: user.analytics?.requests?.audio || 0,
+          document: user.analytics?.requests?.document || 0,
+          image: user.analytics?.requests?.image || 0,
+        },
+      },
+
+      dailyUsage: user.dailyUsage || [],
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    }
+
+    console.log(`📊 Profile assembled for user ${user.email}: ${user.analytics?.totalTokens || 0} total tokens, ${user.analytics?.totalRequests || 0} total requests`)
 
     res.json({
       success: true,
       data: userResponse
-    });
+    })
+    console.log('[getProfile] Response sent successfully.')
   } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ 
+    console.error('Get profile error:', error)
+    res.status(500).json({
       success: false,
-      error: 'Server error while fetching profile' 
-    });
+      error: 'Server error while fetching profile'
+    })
   }
-};
+}
+
 
 // New endpoint to verify token (useful for NextAuth)
 export const verifyToken = async (

@@ -7,7 +7,76 @@ import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+interface MCPRecord {
+  timestamp?: string;
+  context?: string;
+  query?: string;
+  tokens_used?: number;
+  crewai_result?: any;
+  metadata?: any;
+  file_path?: string;
+  document_type?: string;
+  page_count?: number;
+  duration?: number;
+  fps?: number;
+  resolution?: string;
+  format?: string;
+  sample_rate?: number;
+  channels?: number;
+}
 
+interface MCPBackendResponse {
+  success: boolean;
+  user_id: string;
+  total_records: number;
+  images?: MCPRecord[];
+  documents?: MCPRecord[];
+  videos?: MCPRecord[];
+  audio?: MCPRecord[];
+  activity_summary?: any;
+  timestamp: string;
+}
+
+interface TransformedQuery {
+  queryId: string;
+  timestamp: string;
+  agentType: 'image' | 'document' | 'video' | 'audio';
+  classification: string;
+  status: string;
+  confidence: number;
+  priority: string;
+  reasoning: string;
+  processingTime: number;
+  error: null | string;
+  query: string;
+  tokens: number;
+  result: any;
+  metadata: any;
+  filePath?: string;
+  documentType?: string;
+  pageCount?: number;
+  duration?: number;
+  fps?: number;
+  resolution?: string;
+  format?: string;
+  sampleRate?: number;
+  channels?: number;
+}
+
+const transformPixeltableData = (data: any): MCPRecord[] => {
+  if (!data || !Array.isArray(data._rows) || !Array.isArray(data._col_names)) {
+    return []; // Return empty array if data is not in the expected format
+  }
+  
+  const colNames: string[] = data._col_names;
+  return data._rows.map((row: any[]) => {
+    const obj: { [key: string]: any } = {};
+    colNames.forEach((colName: string, index: number) => {
+      obj[colName] = row[index];
+    });
+    return obj as MCPRecord;
+  });
+};
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, '../../uploads');
@@ -63,10 +132,9 @@ class QueryController {
 
   public submitQuery = async (req: Request, res: Response): Promise<void> => {
     try {
-
       const { textQuery, userId } = req.body;
       const files = req.files as Express.Multer.File[];
-
+  
       // Authentication check
       if (!req.user || req.user._id.toString() !== userId) {
         res.status(403).json({
@@ -75,7 +143,7 @@ class QueryController {
         });
         return;
       }
-
+  
       // Validation
       if ((!textQuery || !textQuery.trim()) && (!files || files.length === 0)) {
         res.status(400).json({
@@ -84,9 +152,9 @@ class QueryController {
         });
         return;
       }
-
+  
       const queryId = uuidv4();
-
+  
       const queryData: QueryData = {
         textQuery: textQuery || '',
         files: files?.map(file => ({
@@ -106,24 +174,26 @@ class QueryController {
           ip: req.ip,
         }
       };
-
+  
       console.log(`📥 New query submitted: ${queryId}`);
       console.log(`👤 User: ${userId}`);
       console.log(`📝 Text: ${textQuery?.substring(0, 100)}...`);
       console.log(`📁 Files: ${files?.length || 0}`);
-
+  
       queryStatus.set(queryId, 'processing');
-
-      // Process query asynchronously
-      this.processQueryAsync(queryId, queryData);
-
-      res.status(202).json({
+  
+      // Process query and get the result
+      const result = await this.processQueryAndGetResult(queryId, queryData);
+  
+      res.status(200).json({
         success: true,
         queryId,
-        status: 'processing',
-        message: 'Query submitted successfully. Use the query ID to check status.',
+        status: 'completed',
+        message: 'Query processed successfully.',
+        ...result, // Spread the complete backend response
         estimatedTime: this.estimateProcessingTime(queryData),
       });
+  
     } catch (error) {
       console.error('❌ Submit query error:', error);
       if (req.files) {
@@ -141,68 +211,28 @@ class QueryController {
       });
     }
   };
-
-  private async processQueryAsync(queryId: string, queryData: QueryData): Promise<void> {
-    const startTime = Date.now();
-    
+  
+  private async processQueryAndGetResult(queryId: string, queryData: QueryData): Promise<any> {
     try {
-      console.log(`🔄 Processing query ${queryId}...`);
-      const classification = await this.orchestrator.processQuery(queryData);
-
-      const processingTime = Date.now() - startTime;
-
-      console.log(`📊 Query ${queryId} classification result:`, classification);
-
-      // Store the result
-      const queryResult: QueryResult = {
-        queryId,
-        userId: queryData.userId,
-        classification,
-        timestamp: new Date().toISOString(),
-        status: 'completed',
-        processingTime
-      };
-
-      queryResults.set(queryId, queryResult);
-      queryStatus.set(queryId, 'completed');
-
-      console.log(`✅ Query ${queryId} completed successfully`);
-      console.log(`⏱️  Processing time: ${processingTime}ms`);
-
-      // Cleanup files after processing
-      this.cleanupFiles(queryData);
-
-    } catch (error) {
-      const processingTime = Date.now() - startTime;
+      // Process the query through the orchestrator (fixed property name)
+      const { classification, result, processing_time } = await this.orchestrator.processQuery(queryData);
       
-      console.error(`❌ Query ${queryId} processing failed:`, error);
-
-      queryStatus.set(queryId, 'error');
-
-      // Create error result
-      const errorResult: QueryResult = {
-        queryId,
-        userId: queryData.userId,
-        classification: {
-          classification: 'TEXT',
-          agentType: 'document',
-          reasoning: `Processing failed: ${error instanceof Error ? error.message : String(error)}`,
-          priority: 'low',
-          confidence: 0.0,
-          hasTextQuery: !!queryData.textQuery,
-          fileCount: queryData.files?.length || 0,
-          timestamp: new Date().toISOString()
-        },
-        timestamp: new Date().toISOString(),
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-        processingTime
+      // Store the classification result (fixed status value)
+      queryStatus.set(queryId, 'completed');
+      
+      // Return the actual result from MCP backend
+      return {
+        classification,
+        result,
+        query: queryData.textQuery,
+        file_processed: (queryData.files && queryData.files.length > 0),
+        processing_time,
+        error: null
       };
-
-      queryResults.set(queryId, errorResult);
-
-      // Cleanup files
-      this.cleanupFiles(queryData);
+    } catch (error) {
+      // Fixed status value from 'failed' to 'error'
+      queryStatus.set(queryId, 'error');
+      throw error;
     }
   }
 
@@ -359,45 +389,187 @@ class QueryController {
     }
   };
 
-  public getQueryHistory = async (req: Request, res: Response): Promise<void> => {
+ // MAIN FUNCTION with changes applied
+public getQueryHistory = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = (req as any).user?.userId || (req as any).user?._id?.toString();
+    
+    if (userId !== currentUserId) {
+      res.status(403).json({ success: false, error: 'Unauthorized: User ID mismatch' });
+      return;
+    }
+
+    console.log(`📊 Fetching all data for user: ${userId}`);
+    
+    const mcpBackendUrl = process.env.MCP_BACKEND_URL || 'http://localhost:8001';
+    
     try {
-      const { userId } = req.params;
-      const currentUserId = (req as any).user?.userId || (req as any).user?._id?.toString();
-      
-      if (userId !== currentUserId) {
-        res.status(403).json({ success: false, error: 'Unauthorized: User ID mismatch' });
-        return;
+      const response = await fetch(`${mcpBackendUrl}/api/user-data/${userId}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`MCP Backend responded with status: ${response.status}`);
       }
 
-      const userQueries = Array.from(queryResults.values())
-        .filter(q => q.userId === userId)
-        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-        .slice(0, 50);
+      const mcpData = await response.json() as MCPBackendResponse;
+
+      console.log('📦 Raw data received from MCP backend.');
+      
+      // --- APPLY THE TRANSFORMATION ---
+      const images = transformPixeltableData(mcpData.images);
+      const documents = transformPixeltableData(mcpData.documents);
+      const videos = transformPixeltableData(mcpData.videos);
+      const audio = transformPixeltableData(mcpData.audio);
+      
+      console.log(`✅ Successfully parsed data from MCP backend for user ${userId}`);
+      
+      const transformedQueries: TransformedQuery[] = [];
+      
+      // Process the CORRECTLY PARSED image data
+      if (images.length > 0) {
+        images.forEach((record: MCPRecord) => {
+          transformedQueries.push({
+            queryId: `img_${record.timestamp || Date.now()}`,
+            timestamp: record.timestamp || new Date().toISOString(),
+            agentType: 'image',
+            classification: 'IMAGE',
+            status: 'completed',
+            confidence: 90,
+            priority: 'high',
+            reasoning: record.context || 'Image analysis completed',
+            processingTime: 0,
+            error: null,
+            query: record.query || 'Image analysis',
+            tokens: record.tokens_used || 0,
+            result: record.crewai_result || {},
+            metadata: record.metadata || {},
+            ...(record.file_path && { filePath: record.file_path })
+          });
+        });
+      }
+
+      // Process the CORRECTLY PARSED document data
+      if (documents.length > 0) {
+        documents.forEach((record: MCPRecord) => {
+          transformedQueries.push({
+            queryId: `doc_${record.timestamp || Date.now()}`,
+            timestamp: record.timestamp || new Date().toISOString(),
+            agentType: 'document',
+            classification: 'DOCUMENT',
+            status: 'completed',
+            confidence: 85,
+            priority: 'medium',
+            reasoning: record.context || 'Document analysis completed',
+            processingTime: 0,
+            error: null,
+            query: record.query || 'Document analysis',
+            tokens: record.tokens_used || 0,
+            result: record.crewai_result || {},
+            metadata: record.metadata || {},
+            ...(record.file_path && { filePath: record.file_path }),
+            ...(record.document_type && { documentType: record.document_type }),
+            ...(record.page_count !== undefined && { pageCount: record.page_count })
+          });
+        });
+      }
+
+      // Process the CORRECTLY PARSED video data
+      if (videos.length > 0) {
+        videos.forEach((record: MCPRecord) => {
+          transformedQueries.push({
+            queryId: `vid_${record.timestamp || Date.now()}`,
+            timestamp: record.timestamp || new Date().toISOString(),
+            agentType: 'video',
+            classification: 'VIDEO',
+            status: 'completed',
+            confidence: 88,
+            priority: 'high',
+            reasoning: record.context || 'Video analysis completed',
+            processingTime: 0,
+            error: null,
+            query: record.query || 'Video analysis',
+            tokens: record.tokens_used || 0,
+            result: record.crewai_result || {},
+            metadata: record.metadata || {},
+            ...(record.file_path && { filePath: record.file_path }),
+            ...(record.duration !== undefined && { duration: record.duration }),
+            ...(record.fps !== undefined && { fps: record.fps }),
+            ...(record.resolution && { resolution: record.resolution })
+          });
+        });
+      }
+
+      // Process the CORRECTLY PARSED audio data
+      if (audio.length > 0) {
+        audio.forEach((record: MCPRecord) => {
+          transformedQueries.push({
+            queryId: `aud_${record.timestamp || Date.now()}`,
+            timestamp: record.timestamp || new Date().toISOString(),
+            agentType: 'audio',
+            classification: 'AUDIO',
+            status: 'completed',
+            confidence: 92,
+            priority: 'medium',
+            reasoning: record.context || 'Audio analysis completed',
+            processingTime: 0,
+            error: null,
+            query: record.query || 'Audio analysis',
+            tokens: record.tokens_used || 0,
+            result: record.crewai_result || {},
+            metadata: record.metadata || {},
+            ...(record.file_path && { filePath: record.file_path }),
+            ...(record.duration !== undefined && { duration: record.duration }),
+            ...(record.format && { format: record.format }),
+            ...(record.sample_rate !== undefined && { sampleRate: record.sample_rate }),
+            ...(record.channels !== undefined && { channels: record.channels })
+          });
+        });
+      }
+
+      // Sort by timestamp (newest first)
+      transformedQueries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      console.log(`📊 Transformed ${transformedQueries.length} records for user ${userId}`);
 
       res.status(200).json({
         success: true,
-        queries: userQueries.map(q => ({
-          queryId: q.queryId,
-          timestamp: q.timestamp,
-          agentType: q.classification.agentType,
-          classification: q.classification.classification,
-          status: q.status,
-          confidence: Math.round(q.classification.confidence * 100),
-          priority: q.classification.priority,
-          reasoning: q.classification.reasoning.substring(0, 200) + '...',
-          processingTime: q.processingTime,
-          error: q.error
-        }))
+        queries: transformedQueries.slice(0, 100), // Limit to last 100 records
+        summary: {
+          total: transformedQueries.length,
+          totalTokens: transformedQueries.reduce((sum, q) => sum + (q.tokens || 0), 0),
+          breakdown: {
+            images: images.length,
+            documents: documents.length,
+            videos: videos.length,
+            audio: audio.length
+          }
+        }
       });
-    } catch (error) {
-      console.error('Error getting query history:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to retrieve query history' 
+      
+    } catch (mcpError) {
+      console.error('❌ Error fetching from MCP backend:', mcpError);
+      
+      res.status(502).json({
+        success: false,
+        queries: [],
+        error: 'Failed to fetch data from backend service.',
+        summary: { total: 0, totalTokens: 0, breakdown: { images: 0, documents: 0, videos: 0, audio: 0 } },
       });
     }
-  };
 
+  } catch (error) {
+    console.error('❌ Error getting query history:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to retrieve query history' 
+    });
+  }
+};
   public getCapabilities = async (req: Request, res: Response): Promise<void> => {
     try {
       // Since AgentOrchestrator doesn't have getAgentCapabilities, 

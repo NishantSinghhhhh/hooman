@@ -202,6 +202,41 @@ class DocumentAgent:
             verbose=True,
             allow_delegation=False
         )
+
+    def enhance_analysis_with_crew(self, openai_analysis: Dict[str, Any], query: str, document_path: str, extraction_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Enhance the OpenAI analysis using CrewAI agents."""
+        try:
+            print("🤖 Enhancing document analysis with CrewAI agents...")
+            analysis_agent = self.create_document_analysis_agent()
+            synthesizer_agent = self.create_content_synthesizer_agent()
+            
+            document_text = extraction_result.get("text", "")
+            
+            analysis_task = Task(
+                description=f"Analyze the following document text based on the user's query.\n\nQuery: {query}\n\nDocument Text: {document_text[:1000]}...\n\nPrevious Analysis: {openai_analysis.get('analysis', '')}", 
+                expected_output="A detailed analysis addressing the query with enhanced insights.", 
+                agent=analysis_agent
+            )
+            synthesis_task = Task(
+                description="Synthesize the analysis from the previous task into a final, user-friendly response.", 
+                expected_output="A polished, comprehensive answer that builds upon the initial analysis.", 
+                agent=synthesizer_agent,
+                context=[analysis_task]
+            )
+            
+            crew = Crew(agents=[analysis_agent, synthesizer_agent], tasks=[analysis_task, synthesis_task], verbose=True)
+            crew_output = crew.kickoff()
+            
+            # Get crew tokens
+            crew_tokens = getattr(crew.usage_metrics, 'total_tokens', 0) if hasattr(crew, 'usage_metrics') else 0
+            
+            return {
+                "success": True,
+                "enhanced_analysis": str(crew_output),
+                "tokens_used": crew_tokens
+            }
+        except Exception as e:
+            return {"success": False, "error": f"CrewAI enhancement error: {str(e)}", "tokens_used": 0}
             
     def store_to_pixeltable(self, doc_path: str, query: str, result: Dict[str, Any], user_id: str, processing_time: float, success: bool) -> bool:
         """Stores the document processing results to Pixeltable."""
@@ -316,7 +351,7 @@ class DocumentAgent:
                 self.cleanup_temp_file(original_path)
 
     def process_document(self, document_path: str, query: str = "", user_id: str = "anonymous") -> Dict[str, Any]:
-        """Full, in-depth analysis using text extraction and CrewAI."""
+        """Full, in-depth analysis using text extraction, OpenAI, and CrewAI."""
         start_time = time.time()
         original_path = document_path
         saved_doc_path = None
@@ -332,44 +367,32 @@ class DocumentAgent:
             
             # First get OpenAI analysis for token counting
             openai_result = self.analyze_document_with_openai(document_text, query)
-            openai_tokens = openai_result.get('tokens_used', 0) if openai_result.get('success') else 0
+            if not openai_result.get("success"):
+                raise ValueError(openai_result.get("error"))
             
-            # CrewAI setup
-            analysis_agent = self.create_document_analysis_agent()
-            synthesizer_agent = self.create_content_synthesizer_agent()
-            
-            analysis_task = Task(
-                description=f"Analyze the following document text based on the user's query.\n\nQuery: {query}\n\nText: {document_text}", 
-                expected_output="A detailed analysis addressing the query.", 
-                agent=analysis_agent
-            )
-            synthesis_task = Task(
-                description="Synthesize the analysis from the previous task into a final, user-friendly response.", 
-                expected_output="A polished, comprehensive answer.", 
-                agent=synthesizer_agent,
-                context=[analysis_task]
-            )
-            
-            crew = Crew(agents=[analysis_agent, synthesizer_agent], tasks=[analysis_task, synthesis_task], verbose=2)
-            crew_output = crew.kickoff()
-            
-            # Get crew tokens
-            crew_tokens = getattr(crew.usage_metrics, 'total_tokens', 0) if hasattr(crew, 'usage_metrics') else 0
-            total_tokens = openai_tokens + crew_tokens
+            # Enhance with CrewAI
+            crew_result = self.enhance_analysis_with_crew(openai_result, query, saved_doc_path, extraction_result)
             
             processing_time = time.time() - start_time
+            
+            # Calculate total tokens from all sources
+            openai_tokens = openai_result.get('tokens_used', 0)
+            crew_tokens = crew_result.get('tokens_used', 0) if crew_result.get('success') else 0
+            total_tokens = openai_tokens + crew_tokens
+            
             final_result = {
                 'success': True,
                 'tokens': total_tokens,  # TOP LEVEL TOKEN COUNT
                 'result': {
-                    "analysis": openai_result.get("analysis", "") if openai_result.get('success') else "",
-                    "enhanced_response": str(crew_output),
+                    "analysis": openai_result.get("analysis", ""),
+                    "enhanced_response": crew_result.get("enhanced_analysis", "") if crew_result.get("success") else "",
                     "technical_details": {
                         "tokens_used": total_tokens,
                         "token_breakdown": {
                             "openai_analysis": openai_tokens,
                             "crew_enhancement": crew_tokens
                         },
+                        "model_used": openai_result.get("model_used", "gpt-4o"),
                         "word_count": extraction_result.get("word_count", 0),
                         "char_count": extraction_result.get("char_count", 0)
                     },

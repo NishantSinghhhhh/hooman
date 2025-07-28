@@ -64,16 +64,9 @@ export function QuerySubmission({ isDark, userId, session, onQueryAdded, onQuery
         setIsSubmitting(false);
         return;
       }
-
-      console.log("--- FRONTEND DEBUG ---");
-      console.log("Sending User ID:", sessionUserId);
-      console.log("Sending Token:", token?.substring(0, 20) + "...");
-      console.log("----------------------");
-
       const formData = new FormData();
       formData.append("userId", sessionUserId);
       formData.append("textQuery", textQuery);
-      formData.append("queryType", getQueryType(selectedFiles));
 
       selectedFiles.forEach((file) => {
         formData.append("files", file);
@@ -91,17 +84,17 @@ export function QuerySubmission({ isDark, userId, session, onQueryAdded, onQuery
       );
 
       const result = await response.json();
+      console.log("📨 Backend Response:", result);
 
       if (response.ok && result.success) {
-        console.log("✅ Query submitted successfully:", result.queryId);
+        console.log("✅ Query processed successfully");
         
-        // Update the query with the backend ID and start polling
+        // Update the query with the complete result from backend
         onQueryUpdated(frontendQueryId, {
-          response: `Processing... (Estimated time: ${result.estimatedTime || '10-30 seconds'})`
+          status: "completed",
+          response: result, // Pass the entire result object which contains the MCP backend response
+          type: result.classification?.agentType || getQueryType(selectedFiles),
         });
-        
-        // Start polling for results with backend query ID
-        pollForResults(result.queryId, frontendQueryId);
         
         // Clear form
         setTextQuery("");
@@ -122,73 +115,6 @@ export function QuerySubmission({ isDark, userId, session, onQueryAdded, onQuery
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const pollForResults = async (backendQueryId: string, frontendQueryId: string) => {
-    const maxAttempts = 60; // 5 minutes with 5-second intervals
-    let attempts = 0;
-    
-    console.log(`🔄 Starting to poll for query results: ${backendQueryId}`);
-    
-    const poll = async () => {
-      try {
-        const token = (session as any)?.backendToken;
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"}/api/query/queries/${backendQueryId}/status`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-        
-        const data = await response.json();
-        console.log(`📊 Poll attempt ${attempts + 1}: Status = ${data.status}`);
-        
-        if (data.status === 'completed') {
-          console.log("✅ Query completed successfully");
-          onQueryUpdated(frontendQueryId, {
-            status: 'completed',
-            response: data.result?.response || "Query completed successfully",
-          });
-          return; // Stop polling
-        } else if (data.status === 'failed' || data.status === 'error') {
-          console.log("❌ Query failed");
-          onQueryUpdated(frontendQueryId, {
-            status: 'error',
-            response: data.result?.response || data.error || 'Processing failed',
-          });
-          return; // Stop polling
-        }
-        
-        // Still processing, continue polling
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(poll, 5000); // Poll every 5 seconds
-        } else {
-          console.log("⏰ Polling timed out");
-          onQueryUpdated(frontendQueryId, {
-            status: 'error',
-            response: 'Processing timed out - please try again',
-          });
-        }
-      } catch (error) {
-        console.error(`❌ Polling error (attempt ${attempts + 1}):`, error);
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(poll, 5000); // Retry after 5 seconds
-        } else {
-          onQueryUpdated(frontendQueryId, {
-            status: 'error',
-            response: 'Failed to check query status - please refresh the page',
-          });
-        }
-      }
-    };
-    
-    // Start polling after a short delay to allow backend processing to begin
-    setTimeout(poll, 2000);
   };
 
   return (
@@ -257,7 +183,7 @@ export function QuerySubmission({ isDark, userId, session, onQueryAdded, onQuery
                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                   ></path>
                 </svg>
-                Submitting...
+                Processing...
               </>
             ) : (
               <>

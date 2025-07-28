@@ -1,23 +1,14 @@
-import { useState, useEffect } from "react"
+"use client"
+
+import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Search, MoreHorizontal, UserPlus, Shield, Ban, CheckCircle } from 'lucide-react'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Search, MoreHorizontal, UserPlus, Shield, Ban, CheckCircle } from "lucide-react"
+import { UserPermissionsModal } from "./user-permissions-modal"
 
 interface User {
   _id: string
@@ -31,9 +22,28 @@ interface User {
     totalTokens: number
     totalSpend: number
     currentMonthTokens: number
+    currentMonthRequests: number
   }
   userSettings: {
     monthlyTokenLimit: number
+    monthlyRequestLimit: number
+    canUseVideo: boolean
+    canUseAudio: boolean
+    canUseDocument: boolean
+    canUseImage: boolean
+    theme: string
+    language: string
+    emailNotifications: boolean
+    usageAlerts: boolean
+  }
+  adminSettings?: {
+    canManageUsers: boolean
+    canViewSystemAnalytics: boolean
+    canManageSystemSettings: boolean
+    canAccessLogs: boolean
+    canManageBilling: boolean
+    hasUnlimitedUsage: boolean
+    canOverrideUserLimits: boolean
   }
 }
 
@@ -42,46 +52,12 @@ interface Props {
 }
 
 export function UserManagement({ adminUser }: Props) {
-  const [users, setUsers] = useState<User[]>([])
-  const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState("")
   const [filter, setFilter] = useState<"all" | "active" | "inactive" | "admin">("all")
+  const [selectedUser, setSelectedUser] = useState<User | null>(null)
+  const [isModalOpen, setIsModalOpen] = useState(false)
 
-  useEffect(() => {
-    fetchUsers()
-  }, [])
-
-  const fetchUsers = async () => {
-    try {
-      const response = await fetch("/api/admin/users")
-      if (response.ok) {
-        const data = await response.json()
-        setUsers(data)
-      }
-    } catch (error) {
-      console.error("Failed to fetch users:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleUserAction = async (userId: string, action: "activate" | "deactivate" | "makeAdmin" | "removeAdmin") => {
-    try {
-      const response = await fetch(`/api/admin/users/${userId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      })
-      
-      if (response.ok) {
-        fetchUsers() // Refresh the list
-      }
-    } catch (error) {
-      console.error("Failed to update user:", error)
-    }
-  }
-
-  // Mock data for demonstration
+  // Enhanced mock data with more users
   const mockUsers: User[] = [
     {
       _id: "1",
@@ -91,8 +67,19 @@ export function UserManagement({ adminUser }: Props) {
       role: "user",
       isActive: true,
       lastLogin: "2025-01-27T10:30:00Z",
-      analytics: { totalTokens: 45200, totalSpend: 12.50, currentMonthTokens: 8500 },
-      userSettings: { monthlyTokenLimit: 100000 },
+      analytics: { totalTokens: 45200, totalSpend: 12.5, currentMonthTokens: 8500, currentMonthRequests: 45 },
+      userSettings: {
+        monthlyTokenLimit: 100000,
+        monthlyRequestLimit: 1000,
+        canUseVideo: true,
+        canUseAudio: true,
+        canUseDocument: true,
+        canUseImage: true,
+        theme: "light",
+        language: "en",
+        emailNotifications: true,
+        usageAlerts: true,
+      },
     },
     {
       _id: "2",
@@ -102,19 +89,103 @@ export function UserManagement({ adminUser }: Props) {
       role: "admin",
       isActive: true,
       lastLogin: "2025-01-27T09:15:00Z",
-      analytics: { totalTokens: 125000, totalSpend: 45.75, currentMonthTokens: 15000 },
-      userSettings: { monthlyTokenLimit: 100000 },
+      analytics: { totalTokens: 125000, totalSpend: 45.75, currentMonthTokens: 15000, currentMonthRequests: 89 },
+      userSettings: {
+        monthlyTokenLimit: 100000,
+        monthlyRequestLimit: 1000,
+        canUseVideo: true,
+        canUseAudio: true,
+        canUseDocument: true,
+        canUseImage: true,
+        theme: "dark",
+        language: "en",
+        emailNotifications: true,
+        usageAlerts: false,
+      },
+      adminSettings: {
+        canManageUsers: true,
+        canViewSystemAnalytics: true,
+        canManageSystemSettings: false,
+        canAccessLogs: true,
+        canManageBilling: false,
+        hasUnlimitedUsage: true,
+        canOverrideUserLimits: true,
+      },
+    },
+    {
+      _id: "3",
+      email: "bob.wilson@example.com",
+      firstName: "Bob",
+      lastName: "Wilson",
+      role: "user",
+      isActive: false,
+      lastLogin: "2025-01-25T14:20:00Z",
+      analytics: { totalTokens: 23400, totalSpend: 8.25, currentMonthTokens: 2300, currentMonthRequests: 12 },
+      userSettings: {
+        monthlyTokenLimit: 50000,
+        monthlyRequestLimit: 500,
+        canUseVideo: false,
+        canUseAudio: true,
+        canUseDocument: true,
+        canUseImage: true,
+        theme: "auto",
+        language: "en",
+        emailNotifications: false,
+        usageAlerts: true,
+      },
+    },
+    {
+      _id: "4",
+      email: "alice.johnson@example.com",
+      firstName: "Alice",
+      lastName: "Johnson",
+      role: "user",
+      isActive: true,
+      lastLogin: "2025-01-27T08:45:00Z",
+      analytics: { totalTokens: 67800, totalSpend: 18.9, currentMonthTokens: 12400, currentMonthRequests: 67 },
+      userSettings: {
+        monthlyTokenLimit: 100000,
+        monthlyRequestLimit: 1000,
+        canUseVideo: true,
+        canUseAudio: true,
+        canUseDocument: true,
+        canUseImage: false,
+        theme: "light",
+        language: "es",
+        emailNotifications: true,
+        usageAlerts: true,
+      },
+    },
+    {
+      _id: "5",
+      email: "mike.brown@example.com",
+      firstName: "Mike",
+      lastName: "Brown",
+      role: "user",
+      isActive: true,
+      lastLogin: "2025-01-26T16:30:00Z",
+      analytics: { totalTokens: 89200, totalSpend: 24.15, currentMonthTokens: 18900, currentMonthRequests: 134 },
+      userSettings: {
+        monthlyTokenLimit: 150000,
+        monthlyRequestLimit: 1500,
+        canUseVideo: true,
+        canUseAudio: true,
+        canUseDocument: true,
+        canUseImage: true,
+        theme: "dark",
+        language: "en",
+        emailNotifications: true,
+        usageAlerts: true,
+      },
     },
   ]
 
-  const displayUsers = users.length > 0 ? users : mockUsers
-
-  const filteredUsers = displayUsers.filter((user) => {
-    const matchesSearch = 
+  const filteredUsers = mockUsers.filter((user) => {
+    const matchesSearch =
       user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
       `${user.firstName} ${user.lastName}`.toLowerCase().includes(searchTerm.toLowerCase())
-    
-    const matchesFilter = 
+
+    const matchesFilter =
       filter === "all" ||
       (filter === "active" && user.isActive) ||
       (filter === "inactive" && !user.isActive) ||
@@ -123,14 +194,22 @@ export function UserManagement({ adminUser }: Props) {
     return matchesSearch && matchesFilter
   })
 
+  const handleUserClick = (user: User) => {
+    setSelectedUser(user)
+    setIsModalOpen(true)
+  }
+
+  const handleUserAction = (userId: string, action: string) => {
+    console.log(`Action ${action} for user ${userId}`)
+    // In a real app, this would make an API call
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold text-gray-900 dark:text-white">User Management</h2>
-          <p className="text-gray-600 dark:text-gray-400 mt-1">
-            Manage user accounts and permissions
-          </p>
+          <p className="text-gray-600 dark:text-gray-400 mt-1">Manage user accounts and permissions</p>
         </div>
         <Button>
           <UserPlus className="mr-2 h-4 w-4" />
@@ -189,7 +268,10 @@ export function UserManagement({ adminUser }: Props) {
               {filteredUsers.map((user) => (
                 <TableRow key={user._id}>
                   <TableCell>
-                    <div>
+                    <div
+                      className="cursor-pointer hover:text-purple-600 transition-colors"
+                      onClick={() => handleUserClick(user)}
+                    >
                       <div className="font-medium">
                         {user.firstName} {user.lastName}
                       </div>
@@ -219,16 +301,18 @@ export function UserManagement({ adminUser }: Props) {
                   </TableCell>
                   <TableCell>
                     <div className="text-sm">
-                      <div>{(user.analytics.currentMonthTokens / 1000).toFixed(1)}K / {(user.userSettings.monthlyTokenLimit / 1000)}K</div>
+                      <div>
+                        {(user.analytics.currentMonthTokens / 1000).toFixed(1)}K /{" "}
+                        {user.userSettings.monthlyTokenLimit / 1000}K
+                      </div>
                       <div className="text-gray-500">
-                        {((user.analytics.currentMonthTokens / user.userSettings.monthlyTokenLimit) * 100).toFixed(0)}% used
+                        {((user.analytics.currentMonthTokens / user.userSettings.monthlyTokenLimit) * 100).toFixed(0)}%
+                        used
                       </div>
                     </div>
                   </TableCell>
                   <TableCell>${user.analytics.totalSpend.toFixed(2)}</TableCell>
-                  <TableCell>
-                    {user.lastLogin ? new Date(user.lastLogin).toLocaleDateString() : "Never"}
-                  </TableCell>
+                  <TableCell>{user.lastLogin ? new Date(user.lastLogin).toLocaleDateString() : "Never"}</TableCell>
                   <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -243,15 +327,11 @@ export function UserManagement({ adminUser }: Props) {
                           {user.isActive ? "Deactivate" : "Activate"}
                         </DropdownMenuItem>
                         {user.role === "user" ? (
-                          <DropdownMenuItem
-                            onClick={() => handleUserAction(user._id, "makeAdmin")}
-                          >
+                          <DropdownMenuItem onClick={() => handleUserAction(user._id, "makeAdmin")}>
                             Make Admin
                           </DropdownMenuItem>
                         ) : (
-                          <DropdownMenuItem
-                            onClick={() => handleUserAction(user._id, "removeAdmin")}
-                          >
+                          <DropdownMenuItem onClick={() => handleUserAction(user._id, "removeAdmin")}>
                             Remove Admin
                           </DropdownMenuItem>
                         )}
@@ -266,6 +346,22 @@ export function UserManagement({ adminUser }: Props) {
           </Table>
         </CardContent>
       </Card>
+
+      {selectedUser && (
+        <UserPermissionsModal
+          user={selectedUser}
+          isOpen={isModalOpen}
+          onClose={() => {
+            setIsModalOpen(false)
+            setSelectedUser(null)
+          }}
+          onSave={(updatedUser) => {
+            console.log("User updated:", updatedUser)
+            setIsModalOpen(false)
+            setSelectedUser(null)
+          }}
+        />
+      )}
     </div>
   )
 }

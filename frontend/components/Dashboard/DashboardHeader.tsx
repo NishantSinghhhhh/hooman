@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { Menu, X } from "lucide-react"
-import { ThemeToggle } from "./ThemeToggle"
+// import { ThemeToggle } from "./ThemeToggle"
 
 interface DashboardHeaderProps {
   isDark: boolean
@@ -103,7 +103,7 @@ export function DashboardHeader({ isDark, userId, session, onSignOut, onThemeTog
               </p>
             </div>
             {/* Theme Toggle for Desktop */}
-            <ThemeToggle isDark={isDark} onToggle={handleThemeToggle} />
+            {/* <ThemeToggle isDark={isDark} onToggle={handleThemeToggle} /> */}
             <button
               onClick={onSignOut}
               className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-medium transition-all hover:scale-105 text-sm sm:text-base ${
@@ -117,7 +117,7 @@ export function DashboardHeader({ isDark, userId, session, onSignOut, onThemeTog
           {/* Mobile menu button and Theme Toggle - Shown below 1024px */}
           <div className="lg:hidden mr-12 flex items-center space-x-2">
             {/* Theme Toggle for Mobile (always visible below 1024px) */}
-            <ThemeToggle isDark={isDark} onToggle={handleThemeToggle} />
+            {/* <ThemeToggle isDark={isDark} onToggle={handleThemeToggle} /> */}
             <button
               onClick={toggleMobileMenu}
               className={`p-2 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 ${
